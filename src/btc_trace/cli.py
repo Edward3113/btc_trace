@@ -17,6 +17,7 @@ from btc_trace.ofac import extract_addresses
 from btc_trace.progress import ProgressDisplay
 from btc_trace.report import render
 from btc_trace.rpc import NodeClient, RpcError
+from btc_trace.schema import validate_report
 from btc_trace.trace import DEFAULT_WORKERS, trace
 
 
@@ -353,8 +354,32 @@ def _parse_mark(text: str) -> tuple[str, str]:
     return day, label or day
 
 
-def _cmd_report(args: argparse.Namespace) -> int:
+def _load_valid_report(path: Path, validate: bool = True) -> dict:
+    """Read a trace report, refusing one that does not match the schema."""
+    report = json.loads(path.read_text())
+    if not validate:
+        return report
+    print(f"checking {path} against the report schema...", file=sys.stderr, flush=True)
+    problems = validate_report(report)
+    if problems:
+        raise ValueError(f"{path} is not a valid trace report:\n  " + "\n  ".join(problems))
+    return report
+
+
+def _cmd_validate(args: argparse.Namespace) -> int:
     report = json.loads(args.report.read_text())
+    problems = validate_report(report, limit=args.limit)
+    if problems:
+        print(f"{args.report}: INVALID", file=sys.stderr)
+        for problem in problems:
+            print(f"  {problem}", file=sys.stderr)
+        return 1
+    print(f"{args.report}: valid trace report (version {report['report_version']})")
+    return 0
+
+
+def _cmd_report(args: argparse.Namespace) -> int:
+    report = _load_valid_report(args.report, validate=not args.no_validate)
     findings = args.findings.read_text() if args.findings else None
     page = render(report, title=args.title, findings=findings, marks=args.mark)
     args.out.parent.mkdir(parents=True, exist_ok=True)
@@ -458,10 +483,20 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sh.set_defaults(func=_cmd_show)
 
+    va = sub.add_parser("validate", help="check a saved trace report against the JSON Schema")
+    va.add_argument("report", type=Path, help="JSON report written by trace --out")
+    va.add_argument("--limit", type=int, default=20, help="problems to list (default: 20)")
+    va.set_defaults(func=_cmd_validate)
+
     rp = sub.add_parser("report", help="render a saved trace report as one HTML page")
     rp.add_argument("report", type=Path, help="JSON report written by trace --out")
     rp.add_argument("--out", type=Path, default=Path("docs/index.html"), help="HTML file to write")
     rp.add_argument("--title", help="page title (default: from the SDN entry)")
+    rp.add_argument(
+        "--no-validate",
+        action="store_true",
+        help="skip the schema check (for a report already checked with `validate`)",
+    )
     rp.add_argument("--findings", type=Path, help="Markdown file with your findings")
     rp.add_argument(
         "--mark",

@@ -53,6 +53,7 @@ from btc_trace.heuristics import (
     to_sats,
 )
 from btc_trace.rpc import NodeClient
+from btc_trace.schema import REPORT_VERSION
 
 DEFAULT_WORKERS = 4  # parallel getblock requests; Bitcoin Core serves several at once
 SAMPLE = 10  # outside input addresses kept per transaction in the report
@@ -257,6 +258,7 @@ class TraceResult:
     unexplored: list[str] = field(default_factory=list)
     truncated: bool = False
     note: str = DISCLAIMER
+    report_version: str = REPORT_VERSION  # see btc_trace/schemas/trace-report.schema.json
 
     def to_dict(self) -> dict[str, Any]:
         data = asdict(self)

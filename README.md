@@ -125,6 +125,7 @@ BTC_FIXTURES=recordings uv run btc-trace tx <txid>
 | `btc-trace tx TXID` | Decode a transaction, flag likely CoinJoin, guess change |
 | `btc-trace trace ADDR... [--seeds FILE] [--sdn REF] [--depth N] [--min-btc X] [--start-height H] [--out FILE]` | Follow funds forward from seed addresses |
 | `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons |
+| `btc-trace validate REPORT` | Check a saved report against the JSON Schema |
 | `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--out FILE]` | Render a trace as one self-contained HTML page |
 | `btc-trace scan-status` / `btc-trace scan-abort` | Check or stop a block scan on the node (it runs one at a time) |
 
@@ -215,6 +216,23 @@ Dropped connections are retried, and progress is saved in `.btc_trace_cache/` so
 interrupted trace resumes where it stopped (`--no-cache` turns this off). The node runs one scan at a time; Ctrl+C or a
 timeout stops the scan on the node as well.
 
+## Report format
+
+Every trace report follows a published JSON Schema,
+[`src/btc_trace/schemas/trace-report.schema.json`](src/btc_trace/schemas/trace-report.schema.json)
+(Draft 2020-12), and carries a `report_version`. The schema documents each field, its
+type and its allowed values, so anyone reading a report knows exactly what it contains.
+The test suite checks that every kind of report the tracer produces matches it, so the
+code and the format cannot drift apart unnoticed.
+
+```bash
+uv run btc-trace validate reports/hydra_d1.json
+```
+
+`btc-trace report` runs the same check before rendering and refuses a report that does
+not match, such as one made by an older version. On a large report the check takes
+about a minute; `--no-validate` skips it for a report you have already validated.
+
 ## Publishing a report page
 
 `btc-trace report` turns a saved trace into one self-contained HTML page: headline
@@ -241,7 +259,7 @@ is ever written into a report.
 
 1. ~~Multi-hop tracing with depth and value limits.~~ Done.
 2. ~~A static HTML report for GitHub Pages.~~ Done (`btc-trace report`).
-3. Validation of report output against a JSON Schema.
+3. ~~Validation of report output against a JSON Schema.~~ Done (`btc-trace validate`).
 4. Phase 2: quantum exposure analysis, measuring BTC held in outputs whose public keys
    are already visible on-chain.
 
@@ -257,8 +275,9 @@ CI runs linting, tests, and CodeQL on every push. CI never contacts a node.
 
 ## License
 
-[MIT](LICENSE). Dependencies were checked first: the only runtime dependency,
-truststore, is MIT-licensed, as are the development tools pytest and Ruff.
+[MIT](LICENSE). Dependencies were checked first. Runtime: truststore (MIT) and
+jsonschema (MIT), whose own dependencies are MIT-licensed apart from typing_extensions
+(PSF-2.0); all are compatible. Development: pytest and Ruff (both MIT).
 
 ## Acknowledgments
 
@@ -270,6 +289,8 @@ truststore, is MIT-licensed, as are the development tools pytest and Ruff.
 - [Start9 / StartOS](https://start9.com/), which hosts the author's node.
 - [truststore](https://github.com/sethmlarson/truststore) (MIT), for using the OS trust
   store for TLS.
+- [jsonschema](https://github.com/python-jsonschema/jsonschema) (MIT), for checking
+  reports against the report schema.
 - [uv](https://github.com/astral-sh/uv), [Ruff](https://github.com/astral-sh/ruff),
   [pytest](https://pytest.org/), and GitHub CodeQL.
 - Developed with assistance from Claude (Anthropic).

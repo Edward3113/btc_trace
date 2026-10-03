@@ -1,0 +1,410 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://edward3113.github.io/btc_trace/schema/trace-report.schema.json",
+  "title": "btc_trace report",
+  "description": "Output of `btc-trace trace --out`. Every figure is a heuristic estimate. Amounts are in BTC; dates are UTC calendar dates taken from block times.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_version",
+    "seeds",
+    "parameters",
+    "scanned_to_height",
+    "seed_info",
+    "seed_summaries",
+    "outflow_total",
+    "entities",
+    "levels",
+    "transactions",
+    "hops",
+    "coinjoin_stops",
+    "service_stops",
+    "clusters",
+    "unexplored",
+    "truncated",
+    "note"
+  ],
+  "properties": {
+    "report_version": {
+      "description": "Format version of this report. Bumped whenever a field is added, removed or changes meaning.",
+      "const": "1.0"
+    },
+    "seeds": {
+      "description": "The addresses the trace started from, sorted and without duplicates.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/address" },
+      "uniqueItems": true
+    },
+    "parameters": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "max_depth",
+        "max_addresses",
+        "min_value_btc",
+        "start_height",
+        "service_min_inputs",
+        "workers"
+      ],
+      "properties": {
+        "max_depth": { "type": "integer", "minimum": 1 },
+        "max_addresses": { "type": "integer", "minimum": 0 },
+        "min_value_btc": { "$ref": "#/$defs/btc" },
+        "start_height": { "$ref": "#/$defs/height" },
+        "service_min_inputs": { "type": "integer", "minimum": 0 },
+        "workers": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "scanned_to_height": {
+      "description": "The chain tip when the trace ran.",
+      "$ref": "#/$defs/height"
+    },
+    "seed_info": {
+      "description": "SDN attribution per seed address, for seeds that came from the OFAC list.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["sdn_ref"],
+        "properties": {
+          "sdn_ref": { "type": "string", "minLength": 1 },
+          "sdn_name": { "type": "string" }
+        }
+      }
+    },
+    "seed_summaries": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/seedSummary" }
+    },
+    "outflow_total": {
+      "description": "Sum of per-cluster outflow over clusters holding seeds (double-counts transfers between them); empty when nothing spent.",
+      "anyOf": [
+        { "$ref": "#/$defs/outflow" },
+        { "type": "object", "maxProperties": 0 }
+      ]
+    },
+    "entities": {
+      "description": "Value leaving each SDN entry as a whole: all its seeds' clusters count as inside.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/entity" }
+    },
+    "levels": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/level" }
+    },
+    "transactions": {
+      "description": "Every examined transaction, keyed by txid.",
+      "type": "object",
+      "additionalProperties": { "$ref": "#/$defs/transaction" }
+    },
+    "hops": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/hop" }
+    },
+    "coinjoin_stops": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/coinjoinStop" }
+    },
+    "service_stops": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/serviceStop" }
+    },
+    "clusters": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/cluster" }
+    },
+    "unexplored": {
+      "description": "Addresses reached at the last level whose own spends were not examined.",
+      "type": "array",
+      "items": { "$ref": "#/$defs/address" }
+    },
+    "truncated": {
+      "description": "True when max_addresses stopped some outputs from being followed.",
+      "type": "boolean"
+    },
+    "note": {
+      "description": "The heuristic-estimate disclaimer that travels with the data.",
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "address": { "type": "string", "minLength": 1 },
+    "txid": { "type": "string", "minLength": 1 },
+    "btc": { "type": "number", "minimum": 0 },
+    "height": { "type": "integer", "minimum": 0 },
+    "date": {
+      "description": "UTC date from the block time; null when the time is unknown.",
+      "type": ["string", "null"],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "addresses": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/address" }
+    },
+    "outflow": {
+      "description": "Value that left, as a low (whole cluster) to high (core without batch sweeps) range.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "to_outside_addresses",
+        "to_outside_addresses_core",
+        "into_service_sweeps",
+        "into_service_sweeps_core",
+        "into_coinjoins",
+        "to_other_seed_clusters",
+        "spending_txs",
+        "total",
+        "total_core"
+      ],
+      "properties": {
+        "to_outside_addresses": { "$ref": "#/$defs/btc" },
+        "to_outside_addresses_core": { "$ref": "#/$defs/btc" },
+        "into_service_sweeps": { "$ref": "#/$defs/btc" },
+        "into_service_sweeps_core": { "$ref": "#/$defs/btc" },
+        "into_coinjoins": { "$ref": "#/$defs/btc" },
+        "to_other_seed_clusters": { "$ref": "#/$defs/btc" },
+        "spending_txs": { "type": "integer", "minimum": 0 },
+        "total": { "$ref": "#/$defs/btc" },
+        "total_core": { "$ref": "#/$defs/btc" }
+      }
+    },
+    "seedSummary": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "sdn_ref",
+        "sdn_name",
+        "cluster",
+        "cluster_size",
+        "spending_txs",
+        "spent_btc",
+        "returned_btc",
+        "net_out_btc",
+        "first_spend",
+        "last_spend",
+        "first_spend_height",
+        "last_spend_height"
+      ],
+      "properties": {
+        "address": { "$ref": "#/$defs/address" },
+        "sdn_ref": { "type": ["string", "null"] },
+        "sdn_name": { "type": ["string", "null"] },
+        "cluster": {
+          "description": "1-based index into clusters.",
+          "type": ["integer", "null"],
+          "minimum": 1
+        },
+        "cluster_size": { "type": "integer", "minimum": 1 },
+        "spending_txs": { "type": "integer", "minimum": 0 },
+        "spent_btc": { "$ref": "#/$defs/btc" },
+        "returned_btc": { "$ref": "#/$defs/btc" },
+        "net_out_btc": { "type": "number" },
+        "first_spend": { "$ref": "#/$defs/date" },
+        "last_spend": { "$ref": "#/$defs/date" },
+        "first_spend_height": { "type": ["integer", "null"], "minimum": 0 },
+        "last_spend_height": { "type": ["integer", "null"], "minimum": 0 }
+      }
+    },
+    "entity": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "sdn_ref",
+        "sdn_name",
+        "seeds",
+        "clusters",
+        "cluster_addresses",
+        "outflow",
+        "outflow_by_month"
+      ],
+      "properties": {
+        "sdn_ref": { "type": ["string", "null"] },
+        "sdn_name": { "type": ["string", "null"] },
+        "seeds": { "type": "integer", "minimum": 1 },
+        "clusters": { "type": "integer", "minimum": 0 },
+        "cluster_addresses": { "type": "integer", "minimum": 0 },
+        "outflow": { "$ref": "#/$defs/outflow" },
+        "outflow_by_month": {
+          "description": "YYYY-MM (or \"unknown\") mapped to [low, high] BTC.",
+          "type": "object",
+          "propertyNames": { "pattern": "^(\\d{4}-\\d{2}|unknown)$" },
+          "additionalProperties": {
+            "type": "array",
+            "prefixItems": [{ "$ref": "#/$defs/btc" }, { "$ref": "#/$defs/btc" }],
+            "minItems": 2,
+            "maxItems": 2
+          }
+        }
+      }
+    },
+    "level": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "depth",
+        "addresses",
+        "scanned_from_height",
+        "candidate_blocks",
+        "blocks_touching",
+        "spending_txs"
+      ],
+      "properties": {
+        "depth": { "type": "integer", "minimum": 1 },
+        "addresses": { "type": "integer", "minimum": 0 },
+        "scanned_from_height": { "$ref": "#/$defs/height" },
+        "candidate_blocks": { "type": "integer", "minimum": 0 },
+        "blocks_touching": { "type": "integer", "minimum": 0 },
+        "spending_txs": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "transaction": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "height",
+        "date",
+        "input_addresses",
+        "outside_inputs",
+        "outside_inputs_sample",
+        "outputs",
+        "batch_sweep"
+      ],
+      "properties": {
+        "height": { "$ref": "#/$defs/height" },
+        "date": { "$ref": "#/$defs/date" },
+        "input_addresses": { "type": "integer", "minimum": 0 },
+        "outside_inputs": { "type": "integer", "minimum": 0 },
+        "outside_inputs_sample": { "$ref": "#/$defs/addresses", "maxItems": 10 },
+        "outputs": { "type": "integer", "minimum": 0 },
+        "batch_sweep": { "type": "boolean" }
+      }
+    },
+    "hop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "depth",
+        "height",
+        "date",
+        "txid",
+        "from_addresses",
+        "vout",
+        "to_address",
+        "value_btc",
+        "label",
+        "reasons",
+        "followed"
+      ],
+      "properties": {
+        "depth": { "type": "integer", "minimum": 1 },
+        "height": { "$ref": "#/$defs/height" },
+        "date": { "$ref": "#/$defs/date" },
+        "txid": { "$ref": "#/$defs/txid" },
+        "from_addresses": { "$ref": "#/$defs/addresses" },
+        "vout": { "type": "integer", "minimum": 0 },
+        "to_address": { "$ref": "#/$defs/address" },
+        "value_btc": { "$ref": "#/$defs/btc" },
+        "label": {
+          "enum": ["change (heuristic)", "payment (heuristic)", "undetermined"]
+        },
+        "reasons": {
+          "type": "array",
+          "items": { "type": "string", "minLength": 1 },
+          "minItems": 1
+        },
+        "followed": { "type": "boolean" }
+      }
+    },
+    "coinjoinStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["depth", "height", "date", "txid", "from_addresses", "traced_value_btc"],
+      "properties": {
+        "depth": { "type": "integer", "minimum": 1 },
+        "height": { "$ref": "#/$defs/height" },
+        "date": { "$ref": "#/$defs/date" },
+        "txid": { "$ref": "#/$defs/txid" },
+        "from_addresses": { "$ref": "#/$defs/addresses" },
+        "traced_value_btc": { "$ref": "#/$defs/btc" }
+      }
+    },
+    "serviceStop": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "depth",
+        "height",
+        "date",
+        "txid",
+        "from_addresses",
+        "input_addresses",
+        "outside_inputs",
+        "outputs",
+        "traced_value_btc",
+        "classification"
+      ],
+      "properties": {
+        "depth": { "type": "integer", "minimum": 1 },
+        "height": { "$ref": "#/$defs/height" },
+        "date": { "$ref": "#/$defs/date" },
+        "txid": { "$ref": "#/$defs/txid" },
+        "from_addresses": { "$ref": "#/$defs/addresses" },
+        "input_addresses": { "type": "integer", "minimum": 0 },
+        "outside_inputs": { "type": "integer", "minimum": 0 },
+        "outputs": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["address", "value_btc"],
+            "properties": {
+              "address": { "type": ["string", "null"] },
+              "value_btc": { "$ref": "#/$defs/btc" }
+            }
+          }
+        },
+        "traced_value_btc": { "$ref": "#/$defs/btc" },
+        "classification": {
+          "enum": ["internal consolidation (heuristic)", "service consolidation (heuristic)"]
+        }
+      }
+    },
+    "cluster": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "addresses",
+        "seeds",
+        "evidence",
+        "batch_links",
+        "size_without_batch_sweeps",
+        "outflow"
+      ],
+      "properties": {
+        "addresses": { "$ref": "#/$defs/addresses", "minItems": 1 },
+        "seeds": { "$ref": "#/$defs/addresses" },
+        "evidence": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["kind", "txid", "height", "batch_sweep"],
+            "properties": {
+              "kind": { "enum": ["common input", "change"] },
+              "txid": { "$ref": "#/$defs/txid" },
+              "height": { "$ref": "#/$defs/height" },
+              "batch_sweep": { "type": "boolean" }
+            }
+          }
+        },
+        "batch_links": { "type": "integer", "minimum": 0 },
+        "size_without_batch_sweeps": { "type": "integer", "minimum": 1 },
+        "outflow": {
+          "anyOf": [{ "$ref": "#/$defs/outflow" }, { "type": "null" }]
+        }
+      }
+    }
+  }
+}
