@@ -1,0 +1,337 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://edward3113.github.io/btc_trace/schema/exposure-report.schema.json",
+  "title": "btc_trace exposure report",
+  "description": "Output of `btc-trace exposure --out`: how much of what a list of addresses holds today sits behind a public key that is already visible on-chain. Amounts are in BTC; dates are UTC calendar dates taken from block times.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_kind",
+    "report_version",
+    "snapshot",
+    "totals",
+    "by_type",
+    "by_entry",
+    "addresses",
+    "candidate_blocks",
+    "blocks_checked",
+    "note"
+  ],
+  "properties": {
+    "report_kind": {
+      "const": "exposure"
+    },
+    "report_version": {
+      "description": "Format version of this report. Bumped whenever a field is added, removed or changes meaning.",
+      "const": "1.0"
+    },
+    "snapshot": {
+      "description": "The UTXO set the balances come from.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "height",
+        "bestblock",
+        "date",
+        "utxos_scanned"
+      ],
+      "properties": {
+        "height": {
+          "$ref": "#/$defs/height"
+        },
+        "bestblock": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "date": {
+          "$ref": "#/$defs/date"
+        },
+        "utxos_scanned": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "totals": {
+      "$ref": "#/$defs/totals"
+    },
+    "by_type": {
+      "description": "Totals per output script type, keyed by a readable label.",
+      "type": "object",
+      "additionalProperties": {
+        "$ref": "#/$defs/totals"
+      }
+    },
+    "by_entry": {
+      "description": "Totals per SDN entry, largest balance first.",
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "sdn_ref",
+          "sdn_name",
+          "addresses",
+          "funded_addresses",
+          "exposed_addresses",
+          "balance_btc",
+          "exposed_btc",
+          "hash_only_btc"
+        ],
+        "properties": {
+          "sdn_ref": {
+            "type": "string",
+            "minLength": 1
+          },
+          "sdn_name": {
+            "type": [
+              "string",
+              "null"
+            ]
+          },
+          "addresses": {
+            "$ref": "#/$defs/count"
+          },
+          "funded_addresses": {
+            "$ref": "#/$defs/count"
+          },
+          "exposed_addresses": {
+            "$ref": "#/$defs/count"
+          },
+          "balance_btc": {
+            "$ref": "#/$defs/btc"
+          },
+          "exposed_btc": {
+            "$ref": "#/$defs/btc"
+          },
+          "hash_only_btc": {
+            "$ref": "#/$defs/btc"
+          }
+        }
+      }
+    },
+    "addresses": {
+      "description": "One row per address, largest balance first.",
+      "type": "array",
+      "items": {
+        "$ref": "#/$defs/address"
+      }
+    },
+    "candidate_blocks": {
+      "description": "Blocks the filter index matched while looking for earlier spends.",
+      "$ref": "#/$defs/count"
+    },
+    "blocks_checked": {
+      "description": "Of those, blocks actually read before every address was decided.",
+      "$ref": "#/$defs/count"
+    },
+    "note": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "btc": {
+      "type": "number",
+      "minimum": 0
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "height": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "date": {
+      "description": "UTC date from the block time; null when the time is unknown.",
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "addresses",
+        "funded_addresses",
+        "exposed_addresses",
+        "balance_btc",
+        "exposed_btc",
+        "hash_only_btc"
+      ],
+      "properties": {
+        "addresses": {
+          "$ref": "#/$defs/count"
+        },
+        "funded_addresses": {
+          "$ref": "#/$defs/count"
+        },
+        "exposed_addresses": {
+          "$ref": "#/$defs/count"
+        },
+        "balance_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "exposed_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "hash_only_btc": {
+          "$ref": "#/$defs/btc"
+        }
+      }
+    },
+    "address": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "address",
+        "script_type",
+        "sdn_ref",
+        "sdn_name",
+        "balance_btc",
+        "utxos",
+        "oldest_utxo_height",
+        "status",
+        "exposed",
+        "first_spend"
+      ],
+      "properties": {
+        "address": {
+          "type": "string",
+          "minLength": 1
+        },
+        "script_type": {
+          "description": "Output script type, as Bitcoin Core names it.",
+          "enum": [
+            "pubkey",
+            "multisig",
+            "pubkeyhash",
+            "scripthash",
+            "witness_v0_keyhash",
+            "witness_v0_scripthash",
+            "witness_v1_taproot",
+            "anchor",
+            "nulldata",
+            "witness_unknown",
+            "nonstandard"
+          ]
+        },
+        "sdn_ref": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "sdn_name": {
+          "type": [
+            "string",
+            "null"
+          ]
+        },
+        "balance_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "utxos": {
+          "$ref": "#/$defs/count"
+        },
+        "oldest_utxo_height": {
+          "description": "Height of the oldest coin the address holds; null when it holds none.",
+          "type": [
+            "integer",
+            "null"
+          ],
+          "minimum": 0
+        },
+        "status": {
+          "description": "key in output: the script itself shows the key (P2PK, bare multisig, Taproot). spent before: an earlier spend revealed the key or script. hash only: never spent from. no balance: holds nothing. not applicable: not a key-based type.",
+          "enum": [
+            "key in output",
+            "spent before",
+            "hash only",
+            "no balance",
+            "not applicable"
+          ]
+        },
+        "exposed": {
+          "description": "True when status is 'key in output' or 'spent before'.",
+          "type": "boolean"
+        },
+        "first_spend": {
+          "description": "The earliest spend from the address, for 'spent before'.",
+          "oneOf": [
+            {
+              "type": "null"
+            },
+            {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "height",
+                "date",
+                "txid"
+              ],
+              "properties": {
+                "height": {
+                  "$ref": "#/$defs/height"
+                },
+                "date": {
+                  "$ref": "#/$defs/date"
+                },
+                "txid": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              }
+            }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "enum": [
+                  "key in output",
+                  "spent before"
+                ]
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "exposed": {
+                "const": true
+              }
+            }
+          },
+          "else": {
+            "properties": {
+              "exposed": {
+                "const": false
+              }
+            }
+          }
+        },
+        {
+          "if": {
+            "properties": {
+              "status": {
+                "const": "spent before"
+              }
+            }
+          },
+          "then": {
+            "properties": {
+              "first_spend": {
+                "type": "object"
+              }
+            }
+          }
+        }
+      ]
+    }
+  }
+}

@@ -276,7 +276,7 @@ class NodeClient:
             )
         except KeyboardInterrupt:
             # The node keeps scanning after the client stops waiting; stop it too.
-            self.abort_scan()
+            self._abort_block_scan()
             raise
         except RpcError as exc:
             if "already in progress" in str(exc):
@@ -286,7 +286,7 @@ class NodeClient:
                     "`btc-trace scan-abort`."
                 ) from exc
             if "timed out" in str(exc):
-                self.abort_scan()
+                self._abort_block_scan()
                 raise RpcError(
                     f"scanning blocks {low}-{high} timed out, so the scan on the node was "
                     "stopped. Set a smaller BTC_SCAN_CHUNK (blocks per call) or a larger "
@@ -297,12 +297,65 @@ class NodeClient:
             raise RpcError(f"scanblocks {low}-{high} did not complete (was it aborted?)")
         return result["relevant_blocks"]
 
+    def scan_utxos(self, addresses: list[str]) -> dict[str, Any]:
+        """Unspent outputs paying to any of the addresses, from one pass over the UTXO set.
+
+        ``scantxoutset`` reads the node's whole UTXO set (a few minutes), then returns
+        every match with the height the scan stopped at. Like ``scanblocks`` it runs one
+        scan at a time; an interrupted or timed-out scan is stopped on the node too.
+        """
+        descriptors = [f"addr({a})" for a in addresses]
+        try:
+            result = self.call("scantxoutset", "start", descriptors)
+        except KeyboardInterrupt:
+            self._abort_utxo_scan()
+            raise
+        except RpcError as exc:
+            if "already in progress" in str(exc) or "Scan already" in str(exc):
+                raise RpcError(
+                    "the node is already scanning its UTXO set, and it runs only one such "
+                    "scan at a time. Wait for it to finish, or stop it with "
+                    "`btc-trace scan-abort`."
+                ) from exc
+            if "timed out" in str(exc):
+                self._abort_utxo_scan()
+                raise RpcError(
+                    "the UTXO set scan timed out, so it was stopped on the node. "
+                    "Set a larger BTC_TIMEOUT."
+                ) from exc
+            raise
+        if not result.get("success", False):
+            raise RpcError("scantxoutset did not complete (was it aborted?)")
+        return result
+
+    def utxo_scan_status(self) -> dict[str, Any] | None:
+        """Progress of a running scantxoutset, or None when none is running."""
+        return self.call("scantxoutset", "status")
+
+    def _abort_utxo_scan(self) -> bool:
+        try:
+            return bool(self.call("scantxoutset", "abort"))
+        except RpcError:
+            return False
+
+    def address_script(self, address: str) -> str:
+        """The output script (hex) an address pays to; raises ValueError if invalid."""
+        info = self.call("validateaddress", address)
+        if not info.get("isvalid"):
+            raise ValueError(f"not a valid address on this node's network: {address}")
+        return info["scriptPubKey"]
+
     def scan_status(self) -> dict[str, Any] | None:
         """Progress of a running scanblocks, or None when no scan is running."""
         return self.call("scanblocks", "status")
 
     def abort_scan(self) -> bool:
-        """Stop a running scanblocks. True if a scan was stopped."""
+        """Stop a running scanblocks or scantxoutset. True if a scan was stopped."""
+        stopped_blocks = self._abort_block_scan()
+        stopped_utxos = self._abort_utxo_scan()
+        return stopped_blocks or stopped_utxos
+
+    def _abort_block_scan(self) -> bool:
         try:
             return bool(self.call("scanblocks", "abort"))
         except RpcError:

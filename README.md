@@ -19,8 +19,8 @@ was taken down and sanctioned.
 [written findings](findings/hydra.md) behind it.
 
 > **Status:** tracing, clustering, outflow estimates, schema-validated reports, and the
-> published report page are done. Quantum-exposure analysis is next (see
-> [Roadmap](#roadmap)).
+> published report page are done. Quantum-exposure analysis is under way: exposure of
+> a list of addresses works; the whole UTXO set is next (see [Roadmap](#roadmap)).
 
 ## Why this project exists
 
@@ -144,10 +144,11 @@ BTC_FIXTURES=recordings uv run btc-trace tx <txid>
 | `btc-trace ofac FILE [--ticker XBT] [--json]` | Extract sanctioned addresses |
 | `btc-trace tx TXID` | Decode a transaction, flag likely CoinJoin, guess change |
 | `btc-trace trace ADDR... [--seeds FILE] [--sdn REF] [--depth N] [--min-btc X] [--start-height H] [--out FILE]` | Follow funds forward from seed addresses |
-| `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons |
-| `btc-trace validate REPORT` | Check a saved report against the JSON Schema |
+| `btc-trace exposure ADDR... [--seeds FILE] [--sdn REF] [--out FILE]` | How much of what the addresses hold today has a visible public key |
+| `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons, or an exposure summary |
+| `btc-trace validate REPORT` | Check a saved report against its JSON Schema |
 | `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--out FILE]` | Render a trace as one self-contained HTML page |
-| `btc-trace scan-status` / `btc-trace scan-abort` | Check or stop a block scan on the node (it runs one at a time) |
+| `btc-trace scan-status` / `btc-trace scan-abort` | Check or stop a block or UTXO scan on the node (each runs one at a time) |
 
 ## How tracing works
 
@@ -237,14 +238,51 @@ Dropped connections are retried, and progress is saved in `.btc_trace_cache/` so
 interrupted trace resumes where it stopped (`--no-cache` turns this off). The node runs
 one scan at a time; Ctrl+C or a timeout stops the scan on the node as well.
 
+## Quantum exposure
+
+A quantum computer large enough to run Shor's algorithm could derive a private key
+from its public key. What matters for a coin is therefore whether its public key is
+already visible on the blockchain, which BIP-360 calls *long exposure*:
+
+| Output type | Public key on-chain? |
+| --- | --- |
+| P2PK, bare multisig | Yes: the output script contains the key |
+| P2TR (Taproot) | Yes: the output is a tweaked public key, spendable by key path |
+| P2PKH, P2SH, P2WPKH, P2WSH | Only a hash, until the address spends; after that, any coins it still holds or receives are exposed |
+
+`btc-trace exposure` measures this for a list of addresses, such as the OFAC list:
+
+```bash
+uv run btc-trace exposure --seeds data/sanctioned_xbt.json --out reports/exposure_ofac.json
+uv run btc-trace show reports/exposure_ofac.json
+```
+
+1. `validateaddress` gives each address's output script, and so its type.
+2. One `scantxoutset` pass over the node's UTXO set finds everything the addresses
+   hold today, with the block height the snapshot was taken at.
+3. For hash-based addresses that still hold coins, the block filter index finds
+   candidate blocks and each is read, oldest first, until the address's first spend
+   is found or the candidates run out. Reading stops as soon as every address has been
+   decided, and progress is saved so an interrupted run resumes.
+
+Each address is reported as *key in output*, *spent before* (with the first spend's
+block, date and txid), *hash only* or *no balance*, with totals by script type and by
+SDN entry. Exposure describes keys, not owners: it does not say who controls an
+address, and sanctioned funds may already be frozen or seized off-chain. A key revealed
+by one address type also exposes the same key's other address types (a P2PKH spend
+reveals the key behind the matching P2WPKH address); this check covers only the
+addresses listed.
+
 ## Report format
 
-Every trace report follows a published JSON Schema,
-[`src/btc_trace/schemas/trace-report.schema.json`](src/btc_trace/schemas/trace-report.schema.json)
-(Draft 2020-12), and carries a `report_version`. The schema documents each field, its
+Every report follows a published JSON Schema (Draft 2020-12) and carries a
+`report_version`: trace reports follow
+[`trace-report.schema.json`](src/btc_trace/schemas/trace-report.schema.json), and
+exposure reports, marked `"report_kind": "exposure"`, follow
+[`exposure-report.schema.json`](src/btc_trace/schemas/exposure-report.schema.json). The schema documents each field, its
 type and its allowed values, so anyone reading a report knows exactly what it contains.
-The test suite checks that every kind of report the tracer produces matches it, so the
-code and the format cannot drift apart unnoticed.
+The test suite checks that every kind of report the tool produces matches its schema,
+so the code and the formats cannot drift apart unnoticed.
 
 ```bash
 uv run btc-trace validate reports/hydra_d1.json
@@ -286,6 +324,11 @@ is ever written into a report.
 3. ~~Validation of report output against a JSON Schema.~~ Done (`btc-trace validate`).
 4. Phase 2: quantum exposure analysis, measuring BTC held in outputs whose public keys
    are already visible on-chain.
+   1. ~~Exposure of a list of addresses, such as the OFAC list.~~ Done
+      (`btc-trace exposure`).
+   2. The whole UTXO set by script type and age, from a `dumptxoutset` snapshot.
+   3. Address reuse across the whole chain: keys revealed by any earlier spend.
+   4. Dormancy, and a report page framed against BIP-360 and BIP-361.
 
 ## Development
 
@@ -305,6 +348,9 @@ CI runs linting, tests, and CodeQL on every push. CI never contacts a node.
 - [0xB10C/ofac-sanctioned-digital-currency-addresses](https://github.com/0xB10C/ofac-sanctioned-digital-currency-addresses)
   (MIT), whose approach to parsing the SDN Advanced XML this project follows.
 - [Start9 / StartOS](https://start9.com/), which hosts the author's node.
+- [BIP-360](https://github.com/bitcoin/bips/blob/master/bip-0360.mediawiki) (Hunter
+  Beast, Ethan Heilman, Isabel Foxen Duke), whose long-exposure classification of
+  output types the exposure check follows.
 - [truststore](https://github.com/sethmlarson/truststore) (MIT), for using the OS trust
   store for TLS.
 - [jsonschema](https://github.com/python-jsonschema/jsonschema) (MIT), for checking

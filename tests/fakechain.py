@@ -1,11 +1,13 @@
 """An in-memory chain that answers the RPC calls the tracer uses.
 
 It models scanblocks with exact matching (as with filter_false_positives=true),
-getblock verbosity 3, and getblockcount. All data is synthetic.
+getblock verbosity 3, getblockcount, and, for exposure checks, scantxoutset over a
+given list of unspent outputs and validateaddress. All data is synthetic.
 """
 
 from __future__ import annotations
 
+import hashlib
 import re
 from typing import Any
 
@@ -17,11 +19,22 @@ class FakeChain:
         self,
         blocks: dict[int, list[dict[str, Any]]],
         false_positives: set[int] | None = None,
+        utxos: list[dict[str, Any]] | None = None,
+        scripts: dict[str, str] | None = None,
     ) -> None:
         self.blocks = blocks  # height -> transactions
         # Heights the block filter wrongly matches when false positives are not filtered.
         self.false_positives = false_positives or set()
+        # Unspent outputs for scantxoutset: {"address", "amount", "height"}.
+        self.utxos = utxos or []
+        # Output script (hex) per address; others get a made-up P2WPKH script.
+        self.scripts = scripts or {}
         self.calls: list[tuple[str, list[Any]]] = []
+
+    def script_of(self, address: str) -> str:
+        if address in self.scripts:
+            return self.scripts[address]
+        return "0014" + hashlib.sha256(address.encode()).hexdigest()[:40]
 
     @staticmethod
     def block_hash(height: int) -> str:
@@ -69,5 +82,38 @@ class FakeChain:
                 "to_height": stop,
                 "relevant_blocks": relevant,
                 "completed": True,
+            }
+        if method == "validateaddress":
+            address = params[0]
+            if address.startswith("INVALID"):
+                return {"isvalid": False}
+            return {"isvalid": True, "address": address, "scriptPubKey": self.script_of(address)}
+        if method == "scantxoutset":
+            if params[0] != "start":
+                return None if params[0] == "status" else False
+            wanted = {re.fullmatch(r"addr\((.+)\)", d).group(1) for d in params[1]}
+            tip = max(self.blocks)
+            unspents = [
+                {
+                    "txid": f"{i:064x}",
+                    "vout": 0,
+                    "scriptPubKey": self.script_of(u["address"]),
+                    "desc": f"addr({u['address']})#fakesum0",
+                    "amount": u["amount"],
+                    "coinbase": False,
+                    "height": u["height"],
+                    "blockhash": self.block_hash(u["height"]),
+                    "confirmations": tip - u["height"] + 1,
+                }
+                for i, u in enumerate(self.utxos)
+                if u["address"] in wanted
+            ]
+            return {
+                "success": True,
+                "txouts": len(self.utxos),
+                "height": tip,
+                "bestblock": self.block_hash(tip),
+                "unspents": unspents,
+                "total_amount": sum(u["amount"] for u in unspents),
             }
         raise AssertionError(f"unexpected RPC {method}")

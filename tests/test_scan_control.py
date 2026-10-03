@@ -51,8 +51,8 @@ def test_scan_commands(monkeypatch, capsys):
     assert main(["scan-status"]) == 0
     assert main(["scan-abort"]) == 0
     out = capsys.readouterr().out
-    assert "no block scan is running" in out
-    assert "no block scan was running" in out
+    assert "no scan is running" in out
+    assert "no scan was running" in out
 
 
 def test_scan_is_split_into_chunks():

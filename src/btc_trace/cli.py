@@ -12,12 +12,13 @@ from datetime import date
 from pathlib import Path
 
 from btc_trace import __version__
+from btc_trace.exposure import exposure
 from btc_trace.heuristics import detect_change, input_addresses, looks_like_coinjoin
 from btc_trace.ofac import extract_addresses
 from btc_trace.progress import ProgressDisplay
 from btc_trace.report import render
 from btc_trace.rpc import NodeClient, RpcError
-from btc_trace.schema import validate_report
+from btc_trace.schema import report_kind, validate_report
 from btc_trace.trace import DEFAULT_WORKERS, trace
 
 
@@ -103,7 +104,8 @@ def load_seeds(path: Path) -> list[str]:
     return [entry["address"] for entry in load_seed_entries(path)]
 
 
-def _cmd_trace(args: argparse.Namespace) -> int:
+def _select_entries(args: argparse.Namespace) -> list[dict[str, str]]:
+    """Addresses from the command line plus --seeds, optionally narrowed by --sdn."""
     entries = [{"address": a} for a in args.addresses]
     if args.seeds:
         from_file = load_seed_entries(args.seeds)
@@ -116,14 +118,22 @@ def _cmd_trace(args: argparse.Namespace) -> int:
         raise ValueError("--sdn needs --seeds pointing at `btc-trace ofac --json` output")
     if not entries:
         raise ValueError("give at least one address, or --seeds FILE")
+    return entries
 
+
+def _seed_info(entries: list[dict[str, str]]) -> dict[str, dict[str, str]]:
     seed_info: dict[str, dict[str, str]] = {}
     for e in entries:
         if e.get("sdn_ref"):
             seed_info.setdefault(e["address"], {"sdn_ref": e["sdn_ref"]})
             if e.get("sdn_name"):
                 seed_info[e["address"]]["sdn_name"] = e["sdn_name"]
+    return seed_info
 
+
+def _cmd_trace(args: argparse.Namespace) -> int:
+    entries = _select_entries(args)
+    seed_info = _seed_info(entries)
     client = NodeClient.from_env(args.record)
     display = ProgressDisplay()
     try:
@@ -177,6 +187,89 @@ def _report_trace(args: argparse.Namespace, result) -> int:
     return 0
 
 
+def _cmd_exposure(args: argparse.Namespace) -> int:
+    entries = _select_entries(args)
+    client = NodeClient.from_env(args.record)
+    display = ProgressDisplay()
+    try:
+        result = exposure(
+            client,
+            [e["address"] for e in entries],
+            seed_info=_seed_info(entries),
+            workers=args.workers,
+            cache_dir=None if args.no_cache else args.cache_dir,
+            progress=display.message,
+            bar=display.bar,
+        )
+    finally:
+        display.finish()
+    report = result.to_dict()
+    text = json.dumps(report, indent=2)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text + "\n")
+        _print_exposure(report, rows=args.rows)
+    else:
+        print(text)
+    return 0
+
+
+def _print_exposure(report: dict, rows: int = 15) -> None:
+    """Readable summary of an exposure report."""
+    snap = report["snapshot"]
+    t = report["totals"]
+    print(
+        f"UTXO set at block {snap['height']:,} ({snap['date'] or 'date unknown'}): "
+        f"{t['addresses']} address(es), {t['funded_addresses']} holding coins"
+    )
+    print(
+        f"  holding        {t['balance_btc']:>16,.8f} BTC\n"
+        f"  key visible    {t['exposed_btc']:>16,.8f} BTC  ({t['exposed_addresses']} address(es))\n"
+        f"  behind a hash  {t['hash_only_btc']:>16,.8f} BTC"
+    )
+    funded_types = {k: v for k, v in report["by_type"].items() if v["balance_btc"]}
+    if funded_types:
+        print("\nBy script type:")
+        for label, v in sorted(funded_types.items(), key=lambda kv: -kv[1]["balance_btc"]):
+            print(
+                f"  {label:<16} {v['balance_btc']:>16,.8f} BTC held, "
+                f"{v['exposed_btc']:>16,.8f} BTC with key visible"
+            )
+    funded_entries = [e for e in report["by_entry"] if e["balance_btc"]]
+    if funded_entries:
+        print("\nBy SDN entry (held, key visible):")
+        for e in funded_entries[:rows]:
+            # The name goes last: right-to-left scripts in a name would otherwise
+            # reorder the number columns on screen.
+            print(
+                f"  {e['sdn_ref']:>6}  {e['balance_btc']:>16,.8f}  {e['exposed_btc']:>16,.8f}  "
+                f"{_isolate(e['sdn_name'] or '')}"
+            )
+    funded = [a for a in report["addresses"] if a["balance_btc"]]
+    if funded:
+        print(
+            f"\nAddresses holding coins (largest {min(rows, len(funded))} of {len(funded)}; "
+            "address, SDN entry, balance, status):"
+        )
+        width = max(len(a["address"]) for a in funded[:rows])
+        for a in funded[:rows]:
+            spend = a["first_spend"]
+            why = a["status"]
+            if spend:
+                why += f" (first spend {spend['date'] or spend['height']})"
+            ref = a["sdn_ref"] or "-"
+            print(f"  {a['address']:<{width}}  {ref:>6}  {a['balance_btc']:>16,.8f} BTC  {why}")
+    print(
+        f"\n{report['blocks_checked']:,} of {report['candidate_blocks']:,} candidate block(s) "
+        "read to find earlier spends"
+    )
+
+
+def _isolate(text: str) -> str:
+    """Wrap text in Unicode directional isolates so mixed scripts print in order."""
+    return f"\u2068{text}\u2069" if text else text
+
+
 def _short(addresses: list[str], limit: int = 3) -> str:
     extra = len(addresses) - limit
     return ", ".join(addresses[:limit]) + (f" (+{extra} more)" if extra > 0 else "")
@@ -205,6 +298,9 @@ def _print_hop(hop: dict, transactions: dict) -> None:
 def _cmd_show(args: argparse.Namespace) -> int:
     """Print a saved trace report: summaries first, individual hops on request."""
     report = json.loads(args.report.read_text())
+    if report_kind(report) == "exposure":
+        _print_exposure(report, rows=args.seeds)
+        return 0
     transactions = report.get("transactions", {})
     names = {
         (info.get("sdn_ref"), info.get("sdn_name", ""))
@@ -357,6 +453,11 @@ def _parse_mark(text: str) -> tuple[str, str]:
 def _load_valid_report(path: Path, validate: bool = True) -> dict:
     """Read a trace report, refusing one that does not match the schema."""
     report = json.loads(path.read_text())
+    if report_kind(report) != "trace":
+        raise ValueError(
+            f"{path} is an {report_kind(report)} report; `btc-trace report` renders trace "
+            "reports only (use `btc-trace show` for a summary)"
+        )
     if not validate:
         return report
     print(f"checking {path} against the report schema...", file=sys.stderr, flush=True)
@@ -374,7 +475,8 @@ def _cmd_validate(args: argparse.Namespace) -> int:
         for problem in problems:
             print(f"  {problem}", file=sys.stderr)
         return 1
-    print(f"{args.report}: valid trace report (version {report['report_version']})")
+    kind = report_kind(report)
+    print(f"{args.report}: valid {kind} report (version {report['report_version']})")
     return 0
 
 
@@ -389,19 +491,24 @@ def _cmd_report(args: argparse.Namespace) -> int:
 
 
 def _cmd_scan_status(args: argparse.Namespace) -> int:
-    status = NodeClient.from_env().scan_status()
-    if not status:
-        print("no block scan is running")
-    else:
+    client = NodeClient.from_env()
+    blocks = client.scan_status()
+    utxos = client.utxo_scan_status()
+    if blocks:
         print(
-            f"scan running: {status.get('progress')}% done, at block {status.get('current_height')}"
+            f"block scan running: {blocks.get('progress')}% done, "
+            f"at block {blocks.get('current_height')}"
         )
+    if utxos:
+        print(f"UTXO set scan running: {utxos.get('progress')}% done")
+    if not blocks and not utxos:
+        print("no scan is running")
     return 0
 
 
 def _cmd_scan_abort(args: argparse.Namespace) -> int:
     stopped = NodeClient.from_env().abort_scan()
-    print("stopped the running block scan" if stopped else "no block scan was running")
+    print("stopped the running scan" if stopped else "no scan was running")
     return 0
 
 
@@ -474,8 +581,33 @@ def build_parser() -> argparse.ArgumentParser:
     tr.add_argument("--out", type=Path, help="write the JSON report here instead of stdout")
     tr.set_defaults(func=_cmd_trace)
 
+    ex = sub.add_parser(
+        "exposure", help="how much of what addresses hold today has a visible public key"
+    )
+    ex.add_argument("addresses", nargs="*", help="addresses to check")
+    ex.add_argument("--seeds", type=Path, help="address file: ofac --json output or one per line")
+    ex.add_argument(
+        "--sdn", metavar="REF", help="with --seeds: only addresses from this SDN entry (sdn_ref)"
+    )
+    ex.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("BTC_WORKERS", DEFAULT_WORKERS)),
+        help=f"blocks to fetch in parallel (default: {DEFAULT_WORKERS}, or BTC_WORKERS)",
+    )
+    ex.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path(".btc_trace_cache"),
+        help="where progress is saved so an interrupted run resumes (default: .btc_trace_cache)",
+    )
+    ex.add_argument("--no-cache", action="store_true", help="do not save or reuse progress")
+    ex.add_argument("--rows", type=int, default=15, help="rows to print per table (default: 15)")
+    ex.add_argument("--out", type=Path, help="write the JSON report here instead of stdout")
+    ex.set_defaults(func=_cmd_exposure)
+
     sh = sub.add_parser("show", help="print a saved trace report as readable hops")
-    sh.add_argument("report", type=Path, help="JSON report written by trace --out")
+    sh.add_argument("report", type=Path, help="JSON report written by trace or exposure --out")
     sh.add_argument("--seeds", type=int, default=15, help="seed rows to print (default: 15)")
     sh.add_argument("--clusters", type=int, default=10, help="clusters to print (default: 10)")
     sh.add_argument(
@@ -483,8 +615,8 @@ def build_parser() -> argparse.ArgumentParser:
     )
     sh.set_defaults(func=_cmd_show)
 
-    va = sub.add_parser("validate", help="check a saved trace report against the JSON Schema")
-    va.add_argument("report", type=Path, help="JSON report written by trace --out")
+    va = sub.add_parser("validate", help="check a saved report against its JSON Schema")
+    va.add_argument("report", type=Path, help="JSON report written by trace or exposure --out")
     va.add_argument("--limit", type=int, default=20, help="problems to list (default: 20)")
     va.set_defaults(func=_cmd_validate)
 
@@ -508,9 +640,9 @@ def build_parser() -> argparse.ArgumentParser:
     )
     rp.set_defaults(func=_cmd_report)
 
-    st = sub.add_parser("scan-status", help="show progress of a block scan on the node")
+    st = sub.add_parser("scan-status", help="show progress of a block or UTXO scan on the node")
     st.set_defaults(func=_cmd_scan_status)
-    ab = sub.add_parser("scan-abort", help="stop a block scan running on the node")
+    ab = sub.add_parser("scan-abort", help="stop a block or UTXO scan running on the node")
     ab.set_defaults(func=_cmd_scan_abort)
     return parser
 
