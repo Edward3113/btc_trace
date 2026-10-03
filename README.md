@@ -1,5 +1,7 @@
 # btc_trace
 
+![CI](https://github.com/Edward3113/btc_trace/actions/workflows/ci.yml/badge.svg)
+
 **btc_trace** follows Bitcoin from addresses on the U.S. Treasury's OFAC sanctions list. It
 uses only public blockchain data, read from your own Bitcoin Core node. It groups addresses
 that are probably controlled by the same wallet, labels likely change outputs and gives the
@@ -9,9 +11,12 @@ estimate of how much left the sanctioned wallets, is checked against a published
 Schema, and can be turned into a self-contained HTML report. Every result is a heuristic
 estimate, not proof of who owns an address.
 
-The included [case study](findings/hydra.md) traces Hydra Market's listed addresses: an
-estimated 47,326–51,061 BTC left Hydra's wallets, and spending stopped on 5 April 2022,
-the day it was taken down and sanctioned.
+The included case study traces Hydra Market's listed addresses: an estimated
+47,326–51,061 BTC left Hydra's wallets, and spending stopped on 5 April 2022, the day it
+was taken down and sanctioned.
+
+**[View the Hydra Market report](https://edward3113.github.io/btc_trace/)** and the
+[written findings](findings/hydra.md) behind it.
 
 > **Status:** tracing, clustering, outflow estimates, schema-validated reports, and the
 > published report page are done. Quantum-exposure analysis is next (see
@@ -40,9 +45,14 @@ This project rebuilds those techniques from first principles:
 - **Self-verified data.** Queries go to a Bitcoin Core node the author runs, not a
   third-party API, so every result traces back to independently validated chain data.
 
-It is the third project in a series; the first is
-[pqc-inventory](https://github.com/Edward3113/pqc-inventory), a post-quantum
-cryptography inventory scanner.
+## Companion project
+
+btc_trace is the third project in a series. The first,
+[pqc-inventory](https://github.com/Edward3113/pqc-inventory), finds quantum-vulnerable
+cryptography on TLS and SSH endpoints. Phase 2 of this project (see [Roadmap](#roadmap))
+asks the same question of the Bitcoin blockchain: how much BTC sits in outputs whose
+public keys are already visible on-chain. The two tools share no code, and each works on
+its own.
 
 ## Ethics and scope
 
@@ -154,8 +164,9 @@ one level at a time:
 3. Every output of those transactions is recorded as a hop. Outputs above `--min-btc`
    become the next frontier, until `--depth` or `--max-addresses` is reached.
 
-Each hop carries a label, the reasons behind it, and any co-spent input addresses
-from outside the trace (common-input evidence):
+Each hop carries a label and the reasons behind it. Input addresses spent alongside a
+traced address (common-input evidence) are listed once per transaction in the report's
+transactions table:
 
 | Label | Meaning |
 | --- | --- |
@@ -223,8 +234,8 @@ outputs cannot be tied to specific inputs. Scanning the whole chain can take man
 minutes, so start with a narrow `--start-height` and a shallow `--depth`. Scans run in
 chunks, with a progress bar showing the block reached and the blocks fetched.
 Dropped connections are retried, and progress is saved in `.btc_trace_cache/` so an
-interrupted trace resumes where it stopped (`--no-cache` turns this off). The node runs one scan at a time; Ctrl+C or a
-timeout stops the scan on the node as well.
+interrupted trace resumes where it stopped (`--no-cache` turns this off). The node runs
+one scan at a time; Ctrl+C or a timeout stops the scan on the node as well.
 
 ## Report format
 
@@ -264,6 +275,7 @@ To publish it with GitHub Pages, commit `docs/index.html`, then in the repositor
 **Settings → Pages** set **Source** to **GitHub Actions**. The `Pages` workflow
 (`.github/workflows/pages.yml`) deploys `docs/` whenever it changes, using actions that
 run on Node 24.
+
 The page contains only public chain and sanctions data; no node address or credential
 is ever written into a report.
 
@@ -285,12 +297,6 @@ uv run pytest
 
 CI runs linting, tests, and CodeQL on every push. CI never contacts a node.
 
-## License
-
-[MIT](LICENSE). Dependencies were checked first. Runtime: truststore (MIT) and
-jsonschema (MIT), whose own dependencies are MIT-licensed apart from typing_extensions
-(PSF-2.0); all are compatible. Development: pytest and Ruff (both MIT).
-
 ## Acknowledgments
 
 - [Bitcoin Core](https://bitcoincore.org/) (MIT), the node software queried over RPC.
@@ -306,3 +312,9 @@ jsonschema (MIT), whose own dependencies are MIT-licensed apart from typing_exte
 - [uv](https://github.com/astral-sh/uv), [Ruff](https://github.com/astral-sh/ruff),
   [pytest](https://pytest.org/), and GitHub CodeQL.
 - Developed with assistance from Claude (Anthropic).
+
+## License
+
+[MIT](LICENSE). Dependencies were checked first. Runtime: truststore (MIT) and
+jsonschema (MIT), whose own dependencies are MIT-licensed apart from typing_extensions
+(PSF-2.0); all are compatible. Development: pytest and Ruff (both MIT).
