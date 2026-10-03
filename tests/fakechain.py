@@ -61,6 +61,8 @@ class FakeChain:
                 "time": self.block_time(height),
                 "tx": self.blocks[height],
             }
+        if method == "getblockhash":
+            return self.block_hash(params[0])
         if method == "getblockheader":
             height = int(params[0], 16)
             return {"hash": params[0], "height": height, "time": self.block_time(height)}

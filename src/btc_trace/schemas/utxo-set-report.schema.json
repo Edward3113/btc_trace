@@ -1,0 +1,302 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://edward3113.github.io/btc_trace/schema/utxo-set-report.schema.json",
+  "title": "btc_trace UTXO set report",
+  "description": "Output of `btc-trace utxo-stats --out`: every unspent output in a `dumptxoutset` snapshot, by script type and by the height it was created at. Amounts are in BTC.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "report_kind",
+    "report_version",
+    "snapshot",
+    "totals",
+    "dormancy",
+    "by_type",
+    "age_bins",
+    "checks",
+    "note"
+  ],
+  "properties": {
+    "report_kind": {
+      "const": "utxo-set"
+    },
+    "report_version": {
+      "const": "1.0"
+    },
+    "snapshot": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "network",
+        "base_hash",
+        "base_height",
+        "date",
+        "coins"
+      ],
+      "properties": {
+        "network": {
+          "type": "string"
+        },
+        "base_hash": {
+          "type": "string",
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "base_height": {
+          "$ref": "#/$defs/count"
+        },
+        "date": {
+          "$ref": "#/$defs/date"
+        },
+        "coins": {
+          "$ref": "#/$defs/count"
+        }
+      }
+    },
+    "totals": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coins",
+        "btc",
+        "key_in_output_btc",
+        "hash_only_btc",
+        "other_btc",
+        "dormant_btc",
+        "dormant_key_in_output_btc",
+        "coinbase_p2pk_coins",
+        "coinbase_p2pk_btc"
+      ],
+      "properties": {
+        "coins": {
+          "$ref": "#/$defs/count"
+        },
+        "btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "key_in_output_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "hash_only_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "other_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "dormant_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "dormant_key_in_output_btc": {
+          "$ref": "#/$defs/btc"
+        },
+        "coinbase_p2pk_coins": {
+          "$ref": "#/$defs/count"
+        },
+        "coinbase_p2pk_btc": {
+          "$ref": "#/$defs/btc"
+        }
+      }
+    },
+    "dormancy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "years",
+        "created_before_height",
+        "rule"
+      ],
+      "properties": {
+        "years": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "created_before_height": {
+          "$ref": "#/$defs/count"
+        },
+        "rule": {
+          "type": "string"
+        }
+      }
+    },
+    "by_type": {
+      "description": "Per script type, keyed by a readable label, largest first.",
+      "type": "object",
+      "additionalProperties": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "script_type",
+          "coins",
+          "btc",
+          "share_of_supply",
+          "key_in_output",
+          "hash_only",
+          "dormant_btc"
+        ],
+        "properties": {
+          "script_type": {
+            "enum": [
+              "pubkey",
+              "multisig",
+              "pubkeyhash",
+              "scripthash",
+              "witness_v0_keyhash",
+              "witness_v0_scripthash",
+              "witness_v1_taproot",
+              "anchor",
+              "nulldata",
+              "witness_unknown",
+              "nonstandard"
+            ]
+          },
+          "coins": {
+            "$ref": "#/$defs/count"
+          },
+          "btc": {
+            "$ref": "#/$defs/btc"
+          },
+          "share_of_supply": {
+            "type": "number",
+            "minimum": 0,
+            "maximum": 1
+          },
+          "key_in_output": {
+            "type": "boolean"
+          },
+          "hash_only": {
+            "type": "boolean"
+          },
+          "dormant_btc": {
+            "$ref": "#/$defs/btc"
+          }
+        }
+      }
+    },
+    "age_bins": {
+      "description": "BTC by script type and the height range the coins were created in.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "bin_size",
+        "bins"
+      ],
+      "properties": {
+        "bin_size": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "bins": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "start_height",
+              "start_date",
+              "btc_by_type"
+            ],
+            "properties": {
+              "start_height": {
+                "$ref": "#/$defs/count"
+              },
+              "start_date": {
+                "$ref": "#/$defs/date"
+              },
+              "btc_by_type": {
+                "type": "object",
+                "propertyNames": {
+                  "enum": [
+                    "pubkey",
+                    "multisig",
+                    "pubkeyhash",
+                    "scripthash",
+                    "witness_v0_keyhash",
+                    "witness_v0_scripthash",
+                    "witness_v1_taproot",
+                    "anchor",
+                    "nulldata",
+                    "witness_unknown",
+                    "nonstandard"
+                  ]
+                },
+                "additionalProperties": {
+                  "$ref": "#/$defs/btc"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "checks": {
+      "description": "How the file was verified. null means the check could not be made.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "coins_match_header",
+        "computed_txoutset_hash",
+        "expected_txoutset_hash",
+        "hash_matches",
+        "base_hash_matches",
+        "coins_match_node"
+      ],
+      "properties": {
+        "coins_match_header": {
+          "type": "boolean"
+        },
+        "computed_txoutset_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "expected_txoutset_hash": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "pattern": "^[0-9a-f]{64}$"
+        },
+        "hash_matches": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "base_hash_matches": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        },
+        "coins_match_node": {
+          "type": [
+            "boolean",
+            "null"
+          ]
+        }
+      }
+    },
+    "note": {
+      "type": "string",
+      "minLength": 1
+    }
+  },
+  "$defs": {
+    "btc": {
+      "type": "number",
+      "minimum": 0
+    },
+    "count": {
+      "type": "integer",
+      "minimum": 0
+    },
+    "date": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "pattern": "^\\d{4}-\\d{2}-\\d{2}$"
+    }
+  }
+}

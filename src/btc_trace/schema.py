@@ -19,14 +19,16 @@ from jsonschema import Draft202012Validator
 
 REPORT_VERSION = "1.0"
 EXPOSURE_REPORT_VERSION = "1.0"
+UTXO_REPORT_VERSION = "1.0"
 SCHEMAS = {
     "trace": ("schemas/trace-report.schema.json", REPORT_VERSION),
     "exposure": ("schemas/exposure-report.schema.json", EXPOSURE_REPORT_VERSION),
+    "utxo-set": ("schemas/utxo-set-report.schema.json", UTXO_REPORT_VERSION),
 }
 
 
 def report_kind(report: Any) -> str:
-    """'exposure' for exposure reports; trace reports carry no kind."""
+    """The report's kind ('exposure', 'utxo-set'); trace reports carry none."""
     if isinstance(report, dict):
         return str(report.get("report_kind", "trace"))
     return "trace"

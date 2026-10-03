@@ -8,6 +8,7 @@ import json
 import os
 import sys
 from collections import Counter
+from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
@@ -19,7 +20,8 @@ from btc_trace.progress import ProgressDisplay
 from btc_trace.report import render
 from btc_trace.rpc import NodeClient, RpcError
 from btc_trace.schema import report_kind, validate_report
-from btc_trace.trace import DEFAULT_WORKERS, trace
+from btc_trace.trace import DEFAULT_WORKERS, to_date, trace
+from btc_trace.utxoset import BIN_SIZE, SnapshotError, build_report, read_snapshot
 
 
 def _cmd_node(args: argparse.Namespace) -> int:
@@ -265,6 +267,133 @@ def _print_exposure(report: dict, rows: int = 15) -> None:
     )
 
 
+def _cmd_dump_utxos(args: argparse.Namespace) -> int:
+    client = NodeClient.from_env(args.record)
+    tip = client.tip_height()
+    name = args.name or f"utxo-{tip}.dat"
+    print(
+        f"asking the node to write its UTXO set (block {tip:,}) to {name} in its data "
+        "directory. This takes several minutes and about 10 GB on the node; Ctrl+C stops "
+        "waiting but not the node, which finishes the file anyway.",
+        file=sys.stderr,
+        flush=True,
+    )
+    info = client.dump_utxo_set(name)
+    info_path = args.info or Path("data") / f"{Path(name).stem}.json"
+    info_path.parent.mkdir(parents=True, exist_ok=True)
+    info_path.write_text(json.dumps(info, indent=2) + "\n")
+    print(
+        f"wrote {info['coins_written']:,} coins at block {info['base_height']:,}\n"
+        f"  on the node:    {info['path']}\n"
+        f"  UTXO set hash:  {info['txoutset_hash']}\n"
+        f"  details saved:  {info_path}\n"
+        f"Copy the file to data/{Path(name).name} over SSH, then run:\n"
+        f"  btc-trace utxo-stats data/{Path(name).name}"
+    )
+    return 0
+
+
+def _block_dates(client: NodeClient, heights: list[int], workers: int) -> dict[int, str | None]:
+    """UTC dates of the blocks at the given heights."""
+
+    def date_of(height: int) -> str | None:
+        return to_date(client.call("getblockheader", client.call("getblockhash", height))["time"])
+
+    with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+        return dict(zip(heights, pool.map(date_of, heights), strict=True))
+
+
+def _cmd_utxo_stats(args: argparse.Namespace) -> int:
+    info_path = args.dump_info or args.snapshot.with_suffix(".json")
+    expected = json.loads(info_path.read_text()) if info_path.exists() else None
+    display = ProgressDisplay()
+    verb = "reading and verifying" if not args.no_verify else "reading"
+    display.message(f"{verb} {args.snapshot}")
+
+    def progress(done: int, total: int) -> None:
+        display.bar("reading", done, total, f"{done:,} of {total:,} coins")
+
+    try:
+        stats = read_snapshot(args.snapshot, verify=not args.no_verify, progress=progress)
+    except SnapshotError as exc:
+        raise ValueError(f"{args.snapshot}: {exc}") from exc
+    finally:
+        display.finish()
+
+    base_height = expected.get("base_height") if expected else None
+    base_date = None
+    bin_dates = None
+    if not args.no_dates and (os.environ.get("BTC_URL") or os.environ.get("BTC_FIXTURES")):
+        client = NodeClient.from_env(args.record)
+        header = client.call("getblockheader", stats.header.base_hash)
+        base_height, base_date = header["height"], to_date(header["time"])
+        starts = sorted({b * BIN_SIZE for bins in stats.bins.values() for b in bins})
+        display.message(f"looking up dates for {len(starts)} age bins on the node")
+        bin_dates = _block_dates(client, starts, args.workers)
+    elif not args.no_dates:
+        display.message("no node configured (BTC_URL); age bins will have heights but no dates")
+
+    report = build_report(
+        stats, base_height=base_height, base_date=base_date, expected=expected, bin_dates=bin_dates
+    )
+    text = json.dumps(report, indent=2)
+    if args.out:
+        args.out.parent.mkdir(parents=True, exist_ok=True)
+        args.out.write_text(text + "\n")
+        _print_utxo_report(report)
+    else:
+        print(text)
+    return 0 if _checks_pass(report["checks"]) else 1
+
+
+def _checks_pass(checks: dict) -> bool:
+    return checks["coins_match_header"] and all(
+        checks[k] is not False for k in ("hash_matches", "base_hash_matches", "coins_match_node")
+    )
+
+
+def _print_utxo_report(report: dict) -> None:
+    snap, t = report["snapshot"], report["totals"]
+    print(
+        f"UTXO set at block {snap['base_height']:,} ({snap['date'] or 'date unknown'}, "
+        f"{snap['network']}): {t['coins']:,} coins holding {t['btc']:,.8f} BTC"
+    )
+    print(f"\n  {'type':<24}{'coins':>14}{'BTC':>22}{'share':>8}  key visible?")
+    for label, v in report["by_type"].items():
+        visible = (
+            "yes, in output"
+            if v["key_in_output"]
+            else ("only if reused" if v["hash_only"] else "-")
+        )
+        print(
+            f"  {label:<24}{v['coins']:>14,}{v['btc']:>22,.8f}{v['share_of_supply']:>8.2%}"
+            f"  {visible}"
+        )
+    print(
+        f"\n  key in output (P2PK, multisig, Taproot): {t['key_in_output_btc']:>18,.8f} BTC\n"
+        f"  behind a hash until spent:               {t['hash_only_btc']:>18,.8f} BTC\n"
+        f"  P2PK from coinbase (early mining):      {t['coinbase_p2pk_btc']:>18,.8f} BTC "
+        f"in {t['coinbase_p2pk_coins']:,} coins"
+    )
+    d = report["dormancy"]
+    print(
+        f"  unmoved {d['years']}+ years (created before block {d['created_before_height']:,}): "
+        f"{t['dormant_btc']:,.8f} BTC, of which {t['dormant_key_in_output_btc']:,.8f} BTC "
+        "with the key in the output"
+    )
+    c = report["checks"]
+    marks = {True: "ok", False: "MISMATCH", None: "not checked"}
+    print(
+        "\nChecks:\n"
+        f"  coin count matches the file header:   {marks[c['coins_match_header']]}\n"
+        f"  coin count matches the node's dump:   {marks[c['coins_match_node']]}\n"
+        f"  base block matches the node's dump:   {marks[c['base_hash_matches']]}\n"
+        f"  UTXO set hash matches the node's:     {marks[c['hash_matches']]}"
+    )
+    if c["computed_txoutset_hash"]:
+        print(f"  computed UTXO set hash: {c['computed_txoutset_hash']}")
+
+
 def _isolate(text: str) -> str:
     """Wrap text in Unicode directional isolates so mixed scripts print in order."""
     return f"\u2068{text}\u2069" if text else text
@@ -300,6 +429,9 @@ def _cmd_show(args: argparse.Namespace) -> int:
     report = json.loads(args.report.read_text())
     if report_kind(report) == "exposure":
         _print_exposure(report, rows=args.seeds)
+        return 0
+    if report_kind(report) == "utxo-set":
+        _print_utxo_report(report)
         return 0
     transactions = report.get("transactions", {})
     names = {
@@ -639,6 +771,37 @@ def build_parser() -> argparse.ArgumentParser:
         help="a dated reference line on the timeline (repeatable)",
     )
     rp.set_defaults(func=_cmd_report)
+
+    du = sub.add_parser(
+        "dump-utxos", help="have the node write its UTXO set to a file (about 10 GB)"
+    )
+    du.add_argument(
+        "--name", help="file name in the node's data directory (default: utxo-HEIGHT.dat)"
+    )
+    du.add_argument(
+        "--info", type=Path, help="where to save the node's reply (default: data/NAME.json)"
+    )
+    du.set_defaults(func=_cmd_dump_utxos)
+
+    us = sub.add_parser("utxo-stats", help="measure a UTXO snapshot by script type and age")
+    us.add_argument("snapshot", type=Path, help="file written by dump-utxos (dumptxoutset)")
+    us.add_argument(
+        "--dump-info",
+        type=Path,
+        help="the node's reply saved by dump-utxos (default: SNAPSHOT with .json)",
+    )
+    us.add_argument("--no-verify", action="store_true", help="skip recomputing the UTXO set hash")
+    us.add_argument(
+        "--no-dates", action="store_true", help="do not look up block dates on the node"
+    )
+    us.add_argument(
+        "--workers",
+        type=int,
+        default=int(os.environ.get("BTC_WORKERS", DEFAULT_WORKERS)),
+        help=f"parallel date lookups (default: {DEFAULT_WORKERS}, or BTC_WORKERS)",
+    )
+    us.add_argument("--out", type=Path, help="write the JSON report here instead of stdout")
+    us.set_defaults(func=_cmd_utxo_stats)
 
     st = sub.add_parser("scan-status", help="show progress of a block or UTXO scan on the node")
     st.set_defaults(func=_cmd_scan_status)

@@ -145,6 +145,8 @@ BTC_FIXTURES=recordings uv run btc-trace tx <txid>
 | `btc-trace tx TXID` | Decode a transaction, flag likely CoinJoin, guess change |
 | `btc-trace trace ADDR... [--seeds FILE] [--sdn REF] [--depth N] [--min-btc X] [--start-height H] [--out FILE]` | Follow funds forward from seed addresses |
 | `btc-trace exposure ADDR... [--seeds FILE] [--sdn REF] [--out FILE]` | How much of what the addresses hold today has a visible public key |
+| `btc-trace dump-utxos [--name FILE]` | Have the node write its UTXO set to a file (the only command that writes anything on the node) |
+| `btc-trace utxo-stats SNAPSHOT [--out FILE]` | Measure a UTXO snapshot by script type and age, and verify it against the node's own hash |
 | `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons, or an exposure summary |
 | `btc-trace validate REPORT` | Check a saved report against its JSON Schema |
 | `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--out FILE]` | Render a trace as one self-contained HTML page |
@@ -273,13 +275,43 @@ by one address type also exposes the same key's other address types (a P2PKH spe
 reveals the key behind the matching P2WPKH address); this check covers only the
 addresses listed.
 
+### The whole UTXO set
+
+`btc-trace exposure` looks at chosen addresses. To measure every coin, the node writes
+its whole UTXO set to a file with `dumptxoutset`, and `btc-trace utxo-stats` reads it:
+
+```bash
+uv run btc-trace dump-utxos          # node writes utxo-HEIGHT.dat (about 10 GB, several minutes)
+# copy the file from the node into data/ over SSH, next to the saved data/utxo-HEIGHT.json
+uv run btc-trace utxo-stats data/utxo-HEIGHT.dat --out reports/utxo-HEIGHT.json
+```
+
+`utxo-stats` streams the file once (a few minutes for the roughly 170 million coins on
+mainnet) and adds up coins and BTC by script type and by the 1,000-block range each
+coin was created in, which is when it last moved. Coins created five or more years
+before the snapshot count as dormant. The file is decoded as Bitcoin Core's own
+`contrib/utxo-tools/utxo_to_sqlite.py` does.
+
+While reading, it recomputes the UTXO set hash (`hash_serialized_3`, a SHA256d over
+every coin) and compares it, along with the coin count and base block, with what the
+node reported when it wrote the file. A match proves every coin was copied and decoded
+exactly; a mismatch makes the command fail. With a node configured it also looks up the
+date of each 1,000-block range.
+
+This counts types whose *output* shows a key (P2PK, bare multisig, Taproot). Coins at
+hash-based addresses that have spent before are exposed too; measuring that reuse
+across the whole chain is the next milestone. For comparison, [Chaincode Labs](https://chaincode.com/bitcoin-post-quantum.pdf) counted
+about 1,720,747 BTC in P2PK and 146,715 BTC in P2TR outputs in May 2025.
+
 ## Report format
 
 Every report follows a published JSON Schema (Draft 2020-12) and carries a
 `report_version`: trace reports follow
 [`trace-report.schema.json`](src/btc_trace/schemas/trace-report.schema.json), and
 exposure reports, marked `"report_kind": "exposure"`, follow
-[`exposure-report.schema.json`](src/btc_trace/schemas/exposure-report.schema.json). The schema documents each field, its
+[`exposure-report.schema.json`](src/btc_trace/schemas/exposure-report.schema.json), and
+UTXO set reports, marked `"report_kind": "utxo-set"`, follow
+[`utxo-set-report.schema.json`](src/btc_trace/schemas/utxo-set-report.schema.json). The schema documents each field, its
 type and its allowed values, so anyone reading a report knows exactly what it contains.
 The test suite checks that every kind of report the tool produces matches its schema,
 so the code and the formats cannot drift apart unnoticed.
@@ -351,6 +383,11 @@ CI runs linting, tests, and CodeQL on every push. CI never contacts a node.
 - [BIP-360](https://github.com/bitcoin/bips/blob/master/bip-0360.mediawiki) (Hunter
   Beast, Ethan Heilman, Isabel Foxen Duke), whose long-exposure classification of
   output types the exposure check follows.
+- Bitcoin Core's [`utxo_to_sqlite.py`](https://github.com/bitcoin/bitcoin/tree/master/contrib/utxo-tools)
+  (MIT), whose decoding of `dumptxoutset` files `utxo-stats` follows.
+- Chaincode Labs, [*Bitcoin and Quantum Computing*](https://chaincode.com/bitcoin-post-quantum.pdf)
+  (Milton and Shikhelman, May 2025), for the published P2PK and P2TR figures used as a
+  cross-check.
 - [truststore](https://github.com/sethmlarson/truststore) (MIT), for using the OS trust
   store for TLS.
 - [jsonschema](https://github.com/python-jsonschema/jsonschema) (MIT), for checking

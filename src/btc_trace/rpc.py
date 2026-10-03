@@ -24,7 +24,7 @@ import time
 import urllib.error
 import urllib.request
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 from pathlib import Path
 from typing import Any, Protocol
 
@@ -68,6 +68,8 @@ class HttpTransport:
         """Call the node, retrying when the connection drops mid-request.
 
         Every call this tool makes only reads from the node, so repeating one is safe.
+        The one exception, ``dumptxoutset``, goes through ``NodeClient.dump_utxo_set``,
+        which turns retries off.
         """
         delay = self.retry_delay
         for attempt in range(1, self.retries + 1):
@@ -178,6 +180,11 @@ class RecordingTransport:
 
 
 DEFAULT_SCAN_CHUNK = 25_000  # blocks per scanblocks call
+
+
+def _one_shot(transport: HttpTransport, timeout: float) -> HttpTransport:
+    """The same connection with no retries and at least ``timeout`` seconds to answer."""
+    return replace(transport, retries=1, timeout=max(transport.timeout, timeout))
 
 
 class NodeClient:
@@ -327,6 +334,30 @@ class NodeClient:
         if not result.get("success", False):
             raise RpcError("scantxoutset did not complete (was it aborted?)")
         return result
+
+    def dump_utxo_set(self, name: str, timeout: float = 7200.0) -> dict[str, Any]:
+        """Have the node write its current UTXO set to ``name`` in its data directory.
+
+        This is the one call in the tool that changes anything on the node: it writes
+        a file (around 10 GB on mainnet). It is never retried, since a retry could start
+        a second dump, and it gets a long timeout because writing takes many minutes.
+        Returns the node's reply: coins_written, base_hash, base_height, path,
+        txoutset_hash and nchaintx.
+        """
+        transport = self.transport
+        if isinstance(transport, RecordingTransport) and isinstance(transport.inner, HttpTransport):
+            transport = replace(transport, inner=_one_shot(transport.inner, timeout))
+        elif isinstance(transport, HttpTransport):
+            transport = _one_shot(transport, timeout)
+        try:
+            return transport.call("dumptxoutset", [name, "latest"])
+        except RpcError as exc:
+            if "already exists" in str(exc):
+                raise RpcError(
+                    f"a file named {name} already exists in the node's data directory; "
+                    "choose another --name, or remove the old one over SSH"
+                ) from exc
+            raise
 
     def utxo_scan_status(self) -> dict[str, Any] | None:
         """Progress of a running scantxoutset, or None when none is running."""
