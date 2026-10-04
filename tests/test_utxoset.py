@@ -184,6 +184,7 @@ def test_utxo_stats_command_with_and_without_a_node(snap, tmp_path, monkeypatch,
         "start_height": 0,
         "start_date": "2020-01-01",
         "btc_by_type": {"multisig": 0.00001, "pubkey": 100.0},
+        "revealed_btc_by_type": {},
     }
     assert main(["validate", str(out)]) == 0
     assert "valid utxo-set report" in capsys.readouterr().out

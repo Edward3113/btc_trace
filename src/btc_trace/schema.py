@@ -19,7 +19,7 @@ from jsonschema import Draft202012Validator
 
 REPORT_VERSION = "1.0"
 EXPOSURE_REPORT_VERSION = "1.0"
-UTXO_REPORT_VERSION = "1.0"
+UTXO_REPORT_VERSION = "1.1"
 SCHEMAS = {
     "trace": ("schemas/trace-report.schema.json", REPORT_VERSION),
     "exposure": ("schemas/exposure-report.schema.json", EXPOSURE_REPORT_VERSION),

@@ -26,10 +26,13 @@ from __future__ import annotations
 
 import hashlib
 import mmap
+from array import array
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+
+import numpy as np
 
 from btc_trace.schema import UTXO_REPORT_VERSION
 from btc_trace.scripts import (
@@ -63,10 +66,11 @@ DORMANT_YEARS = 5
 
 NOTE = (
     "Counts every unspent output in the node's UTXO set by script type. 'Key in "
-    "output' covers only types whose output script shows a public key (P2PK, bare "
-    "multisig, Taproot). Hash-based outputs at addresses that have spent before also "
-    "have a visible key; that reuse is measured separately. Coins are not owners: one "
-    "wallet can hold many outputs, and an output's age is when it last moved."
+    "output' covers types whose output script shows a public key (P2PK, bare "
+    "multisig, Taproot). 'Revealed' covers hash-based outputs at addresses whose key "
+    "or script an earlier spend has put on-chain (address reuse); it is null when no "
+    "reveal scan was given. Coins are not owners: one wallet can hold many outputs, "
+    "and an output's age is when it last moved."
 )
 
 Progress = Callable[[int, int], None]
@@ -150,6 +154,10 @@ class TypeTally:
     sats: int = 0
 
 
+HASH_KINDS = (P2PKH, P2SH, P2WPKH, P2WSH)
+FLUSH_EVERY = 1 << 20
+
+
 @dataclass
 class SnapshotStats:
     header: SnapshotHeader
@@ -158,6 +166,10 @@ class SnapshotStats:
     coinbase_p2pk: TypeTally = field(default_factory=TypeTally)
     max_height: int = 0
     computed_hash: str | None = None
+    # Filled when a set of revealed address hashes is given: hash-based coins whose
+    # address has revealed its key or script.
+    revealed: dict[str, TypeTally] | None = None
+    revealed_bins: dict[str, dict[int, int]] | None = None  # kind -> bin -> sats
 
 
 def read_snapshot(
@@ -166,20 +178,91 @@ def read_snapshot(
     verify: bool = True,
     progress: Progress | None = None,
     bin_size: int = BIN_SIZE,
+    revealed: np.ndarray | None = None,
 ) -> SnapshotStats:
     """Stream a snapshot once and tally coins by type and age.
 
     With ``verify`` the UTXO set hash is recomputed along the way (about half again
-    as long). ``progress(done, total)`` is called every 2^20 coins.
+    as long). ``progress(done, total)`` is called every 2^20 coins. ``revealed`` is a
+    sorted array of address-hash prefixes from ``btc-trace reveal-scan``; when given,
+    hash-based coins at those addresses are tallied as revealed.
     """
     with path.open("rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
         header = read_header(data)
         stats = SnapshotStats(header)
-        _read_coins(data, header, stats, verify, progress, bin_size)
+        _read_coins(data, header, stats, verify, progress, bin_size, revealed, None)
     return stats
 
 
-def _read_coins(data, header, stats, verify, progress, bin_size) -> None:  # noqa: C901
+def hash_targets(path: Path, progress: Progress | None = None) -> np.ndarray:
+    """Sorted, distinct 8-byte prefixes of every hash-based coin's address hash.
+
+    These are what ``reveal-scan`` looks for: the 20-byte hash in P2PKH, P2SH and
+    P2WPKH outputs and the 32-byte hash in P2WSH outputs.
+    """
+    out = array("Q")
+    with path.open("rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as data:
+        header = read_header(data)
+        _read_coins(data, header, SnapshotStats(header), False, progress, BIN_SIZE, None, out)
+    return np.unique(np.frombuffer(out, dtype=np.uint64))
+
+
+class _RevealedTally:
+    """Collects hash-based coins in batches and checks them against revealed hashes."""
+
+    def __init__(self, revealed: np.ndarray, bin_size: int) -> None:
+        self.revealed = revealed
+        self.bin_size = bin_size
+        self.prefixes = array("Q")
+        self.sats = array("Q")
+        self.kinds = array("B")
+        self.heights = array("I")
+        self.tallies = {k: [0, 0] for k in HASH_KINDS}
+        self.bins: dict[str, dict[int, int]] = {k: {} for k in HASH_KINDS}
+
+    def add(self, key: int, sats: int, kind_index: int, height: int) -> None:
+        self.prefixes.append(key)
+        self.sats.append(sats)
+        self.kinds.append(kind_index)
+        self.heights.append(height)
+        if len(self.prefixes) >= FLUSH_EVERY:
+            self.flush()
+
+    def flush(self) -> None:
+        if not self.prefixes:
+            return
+        keys = np.frombuffer(self.prefixes, dtype=np.uint64)
+        sats = np.frombuffer(self.sats, dtype=np.uint64)
+        kinds = np.frombuffer(self.kinds, dtype=np.uint8)
+        bins = np.frombuffer(self.heights, dtype=np.uint32) // self.bin_size
+        if self.revealed.size:
+            idx = np.searchsorted(self.revealed, keys)
+            idx[idx == self.revealed.size] = self.revealed.size - 1
+            hit = self.revealed[idx] == keys
+        else:
+            hit = np.zeros(keys.size, dtype=bool)
+        for i, kind in enumerate(HASH_KINDS):
+            sel = hit & (kinds == i)
+            if not sel.any():
+                continue
+            chosen = sats[sel]
+            self.tallies[kind][0] += int(sel.sum())
+            self.tallies[kind][1] += int(chosen.sum())
+            kind_bins = self.bins[kind]
+            values, inverse = np.unique(bins[sel], return_inverse=True)
+            sums = np.zeros(values.size, dtype=np.uint64)
+            np.add.at(sums, inverse, chosen)
+            for b, total in zip(values.tolist(), sums.tolist(), strict=True):
+                kind_bins[b] = kind_bins.get(b, 0) + total
+        self.prefixes = array("Q")
+        self.sats = array("Q")
+        self.kinds = array("B")
+        self.heights = array("I")
+
+
+def _read_coins(  # noqa: C901
+    data, header, stats, verify, progress, bin_size, revealed, targets_out
+) -> None:
     pos = HEADER_SIZE
     total = header.coins
     end = len(data)
@@ -191,6 +274,9 @@ def _read_coins(data, header, stats, verify, progress, bin_size) -> None:  # noq
     left_in_tx = 0
     txid = b""
     report_every = 1 << 20
+    tracker = _RevealedTally(revealed, bin_size) if revealed is not None else None
+    track = tracker is not None or targets_out is not None
+    key = b""
 
     def varint() -> int:
         nonlocal pos
@@ -228,10 +314,12 @@ def _read_coins(data, header, stats, verify, progress, bin_size) -> None:  # noq
             size = varint()
             if size == 0:
                 kind = P2PKH
+                key = data[pos : pos + 8]
                 script = b"\x76\xa9\x14" + data[pos : pos + 20] + b"\x88\xac" if verify else b""
                 pos += 20
             elif size == 1:
                 kind = P2SH
+                key = data[pos : pos + 8]
                 script = b"\xa9\x14" + data[pos : pos + 20] + b"\x87" if verify else b""
                 pos += 20
             elif size < 6:
@@ -254,6 +342,10 @@ def _read_coins(data, header, stats, verify, progress, bin_size) -> None:  # noq
                 script = data[pos : pos + size]
                 pos += size
                 kind = _classify(script)
+                if kind in (P2WPKH, P2WSH, P2SH):
+                    key = script[2:10]
+                elif kind == P2PKH:
+                    key = script[3:11]
             if pos > end:
                 raise SnapshotError(f"file ends in the middle of coin {i} of {total}")
 
@@ -270,6 +362,12 @@ def _read_coins(data, header, stats, verify, progress, bin_size) -> None:  # noq
             b[1] += sats
             if height > max_height:
                 max_height = height
+            if track and kind in HASH_KINDS:
+                prefix = int.from_bytes(key, "big")
+                if targets_out is not None:
+                    targets_out.append(prefix)
+                if tracker is not None:
+                    tracker.add(prefix, sats, HASH_KINDS.index(kind), height)
 
             if hasher is not None:
                 hasher.update(
@@ -286,6 +384,10 @@ def _read_coins(data, header, stats, verify, progress, bin_size) -> None:  # noq
     except IndexError:
         raise SnapshotError("file ends before all coins were read") from None
 
+    if tracker is not None:
+        tracker.flush()
+        stats.revealed = {k: TypeTally(*v) for k, v in tracker.tallies.items()}
+        stats.revealed_bins = tracker.bins
     if pos != end:
         raise SnapshotError(f"{end - pos} unexpected byte(s) after the last coin")
     if progress:
@@ -318,25 +420,32 @@ def build_report(
     expected: dict[str, Any] | None = None,
     bin_dates: dict[int, str | None] | None = None,
     bin_size: int = BIN_SIZE,
+    reuse: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """The report for a read snapshot.
 
     ``expected`` is the ``dumptxoutset`` reply saved by ``btc-trace dump-utxos``; when
-    given, coin count, base block and hash are checked against it.
+    given, coin count, base block and hash are checked against it. ``reuse`` describes
+    the reveal scan whose results were passed to ``read_snapshot`` as ``revealed``.
     """
     height = base_height if base_height is not None else stats.max_height
     total_coins = sum(t.coins for t in stats.tallies.values())
     total_sats = sum(t.sats for t in stats.tallies.values())
     dormant_before = height - DORMANT_YEARS * BLOCKS_PER_YEAR
+    measured = stats.revealed is not None
+    revealed = stats.revealed or {}
+    revealed_bins = stats.revealed_bins or {}
+
+    def is_old(b: int) -> bool:
+        return (b + 1) * bin_size <= dormant_before
 
     by_type = {}
     exposed = hidden = dormant_exposed = dormant_all = 0
+    revealed_sats = dormant_revealed = 0
     for kind in sorted(stats.tallies, key=lambda k: -stats.tallies[k].sats):
         tally = stats.tallies[kind]
-        old = sum(
-            t.sats for b, t in stats.bins[kind].items() if (b + 1) * bin_size <= dormant_before
-        )
-        by_type[LABELS.get(kind, kind)] = {
+        old = sum(t.sats for b, t in stats.bins[kind].items() if is_old(b))
+        entry = {
             "script_type": kind,
             "coins": tally.coins,
             "btc": _btc(tally.sats),
@@ -344,6 +453,8 @@ def build_report(
             "key_in_output": key_in_output(kind),
             "hash_only": hash_only(kind),
             "dormant_btc": _btc(old),
+            "revealed_coins": None,
+            "revealed_btc": None,
         }
         dormant_all += old
         if key_in_output(kind):
@@ -351,6 +462,15 @@ def build_report(
             dormant_exposed += old
         elif hash_only(kind):
             hidden += tally.sats
+            if measured:
+                r = revealed.get(kind, TypeTally())
+                entry["revealed_coins"] = r.coins
+                entry["revealed_btc"] = _btc(r.sats)
+                revealed_sats += r.sats
+                dormant_revealed += sum(
+                    v for b, v in revealed_bins.get(kind, {}).items() if is_old(b)
+                )
+        by_type[LABELS.get(kind, kind)] = entry
 
     checks = _checks(stats, total_coins, expected)
     bin_ids = sorted({b for kinds in stats.bins.values() for b in kinds})
@@ -363,9 +483,15 @@ def build_report(
                 for kind in sorted(stats.bins)
                 if b in stats.bins[kind]
             },
+            "revealed_btc_by_type": {
+                kind: _btc(revealed_bins[kind][b])
+                for kind in sorted(revealed_bins)
+                if b in revealed_bins[kind]
+            },
         }
         for b in bin_ids
     ]
+    exposed_total = exposed + revealed_sats
     return {
         "report_kind": "utxo-set",
         "report_version": UTXO_REPORT_VERSION,
@@ -382,8 +508,14 @@ def build_report(
             "key_in_output_btc": _btc(exposed),
             "hash_only_btc": _btc(hidden),
             "other_btc": _btc(total_sats - exposed - hidden),
+            "revealed_btc": _btc(revealed_sats) if measured else None,
+            "exposed_btc": _btc(exposed_total) if measured else None,
+            "exposed_share": (exposed_total / total_sats if total_sats else 0.0)
+            if measured
+            else None,
             "dormant_btc": _btc(dormant_all),
             "dormant_key_in_output_btc": _btc(dormant_exposed),
+            "dormant_exposed_btc": _btc(dormant_exposed + dormant_revealed) if measured else None,
             "coinbase_p2pk_coins": stats.coinbase_p2pk.coins,
             "coinbase_p2pk_btc": _btc(stats.coinbase_p2pk.sats),
         },
@@ -396,6 +528,7 @@ def build_report(
                 f"counted in whole {bin_size:,}-block bins"
             ),
         },
+        "reuse": reuse if measured else None,
         "by_type": by_type,
         "age_bins": {"bin_size": bin_size, "bins": age},
         "checks": checks,

@@ -20,7 +20,8 @@ was taken down and sanctioned.
 
 > **Status:** tracing, clustering, outflow estimates, schema-validated reports, and the
 > published report page are done. Quantum-exposure analysis is under way: exposure of
-> a list of addresses works; the whole UTXO set is next (see [Roadmap](#roadmap)).
+> listed addresses and of the whole UTXO set by type works; address reuse across the
+> whole chain is next (see [Roadmap](#roadmap)).
 
 ## Why this project exists
 
@@ -146,7 +147,8 @@ BTC_FIXTURES=recordings uv run btc-trace tx <txid>
 | `btc-trace trace ADDR... [--seeds FILE] [--sdn REF] [--depth N] [--min-btc X] [--start-height H] [--out FILE]` | Follow funds forward from seed addresses |
 | `btc-trace exposure ADDR... [--seeds FILE] [--sdn REF] [--out FILE]` | How much of what the addresses hold today has a visible public key |
 | `btc-trace dump-utxos [--name FILE]` | Have the node write its UTXO set to a file (the only command that writes anything on the node) |
-| `btc-trace utxo-stats SNAPSHOT [--out FILE]` | Measure a UTXO snapshot by script type and age, and verify it against the node's own hash |
+| `btc-trace utxo-stats SNAPSHOT [--revealed FILE] [--out FILE]` | Measure a UTXO snapshot by script type and age (and reuse, with a reveal scan), and verify it against the node's own hash |
+| `btc-trace reveal-scan SNAPSHOT [--workers N]` | Read every block to find hash-based addresses whose key or script has been revealed |
 | `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons, or an exposure summary |
 | `btc-trace validate REPORT` | Check a saved report against its JSON Schema |
 | `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--out FILE]` | Render a trace as one self-contained HTML page |
@@ -298,10 +300,48 @@ node reported when it wrote the file. A match proves every coin was copied and d
 exactly; a mismatch makes the command fail. With a node configured it also looks up the
 date of each 1,000-block range.
 
-This counts types whose *output* shows a key (P2PK, bare multisig, Taproot). Coins at
-hash-based addresses that have spent before are exposed too; measuring that reuse
-across the whole chain is the next milestone. For comparison, [Chaincode Labs](https://chaincode.com/bitcoin-post-quantum.pdf) counted
-about 1,720,747 BTC in P2PK and 146,715 BTC in P2TR outputs in May 2025.
+On its own this counts types whose *output* shows a key (P2PK, bare multisig,
+Taproot). For comparison, [Chaincode Labs](https://chaincode.com/bitcoin-post-quantum.pdf)
+counted about 1,720,747 BTC in P2PK and 146,715 BTC in P2TR outputs in May 2025.
+
+### Address reuse across the whole chain
+
+Coins at a hash-based address are exposed too once that address has spent: the spend
+put its public key (P2PKH, P2WPKH) or script (P2SH, P2WSH) on-chain. Bitcoin Core keeps
+no index of this, so `btc-trace reveal-scan` reads every block once:
+
+```bash
+caffeinate -i uv run btc-trace reveal-scan data/utxo-HEIGHT.dat     # many hours; resumable
+uv run btc-trace utxo-stats data/utxo-HEIGHT.dat --revealed data/utxo-HEIGHT.revealed.npy \
+  --out reports/utxo-HEIGHT.json
+```
+
+1. It collects the address hash of every hash-based coin in the snapshot (the targets).
+2. It reads blocks 0 to the snapshot height from the node as raw bytes, several worker
+   processes at a time over kept-alive connections. About 700 GB of blocks cross the
+   network as hex, so this takes hours; each finished range of 1,000 blocks is saved, and
+   an interrupted scan resumes where it stopped.
+3. For every input it hashes what the spend revealed back to the addresses it unlocks.
+   It needs no record of which output each input spent:
+   - a public key gives its P2PKH/P2WPKH hash and its P2SH-wrapped P2WPKH hash, and an
+     uncompressed key also gives the compressed form's (the same key);
+   - a P2SH redeem script gives its script hash, a P2WSH witness script its SHA-256
+     (and its P2SH-wrapped hash), and keys inside those scripts count as revealed too;
+   - Taproot spends and P2PK spends are skipped: those outputs show a key anyway.
+4. Revealed hashes that match a target are kept, compared by their first 8 bytes. With
+   tens of millions of targets and billions of comparisons, the expected number of
+   false matches is far below one.
+
+`utxo-stats --revealed` then adds, per type and per age bin, the BTC at addresses whose
+key or script is already on-chain, and the total with a visible key either way. Published
+estimates for that total are 6.26 million BTC (Project Eleven, cited by Chaincode, 2025)
+to 6.9 million (Google Quantum AI, 2026).
+
+Limits: a compressed key revealed by a spend does not mark the *uncompressed* P2PKH
+address of the same key (that needs an elliptic-curve square root per key; such outputs
+are rare and old). A revealed script with no keys in it (a hash lock, say) counts as
+revealed although no key is exposed. Keys disclosed off-chain, such as shared extended
+public keys, are invisible here.
 
 ## Report format
 
@@ -358,8 +398,10 @@ is ever written into a report.
    are already visible on-chain.
    1. ~~Exposure of a list of addresses, such as the OFAC list.~~ Done
       (`btc-trace exposure`).
-   2. The whole UTXO set by script type and age, from a `dumptxoutset` snapshot.
-   3. Address reuse across the whole chain: keys revealed by any earlier spend.
+   2. ~~The whole UTXO set by script type and age, from a `dumptxoutset` snapshot.~~
+      Done (`btc-trace dump-utxos`, `btc-trace utxo-stats`).
+   3. Address reuse across the whole chain: keys revealed by any earlier spend
+      (`btc-trace reveal-scan`; built, first full run pending).
    4. Dormancy, and a report page framed against BIP-360 and BIP-361.
 
 ## Development
@@ -392,12 +434,15 @@ CI runs linting, tests, and CodeQL on every push. CI never contacts a node.
   store for TLS.
 - [jsonschema](https://github.com/python-jsonschema/jsonschema) (MIT), for checking
   reports against the report schema.
+- [NumPy](https://numpy.org/) (BSD-3-Clause), for matching tens of millions of address
+  hashes during the reveal scan.
 - [uv](https://github.com/astral-sh/uv), [Ruff](https://github.com/astral-sh/ruff),
   [pytest](https://pytest.org/), and GitHub CodeQL.
 - Developed with assistance from Claude (Anthropic).
 
 ## License
 
-[MIT](LICENSE). Dependencies were checked first. Runtime: truststore (MIT) and
+[MIT](LICENSE). Dependencies were checked first. Runtime: truststore (MIT),
 jsonschema (MIT), whose own dependencies are MIT-licensed apart from typing_extensions
-(PSF-2.0); all are compatible. Development: pytest and Ruff (both MIT).
+(PSF-2.0), and NumPy (BSD-3-Clause, with bundled parts under 0BSD, MIT, Zlib and
+CC0-1.0); all are compatible. Development: pytest and Ruff (both MIT).

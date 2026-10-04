@@ -11,6 +11,7 @@
     "snapshot",
     "totals",
     "dormancy",
+    "reuse",
     "by_type",
     "age_bins",
     "checks",
@@ -21,7 +22,8 @@
       "const": "utxo-set"
     },
     "report_version": {
-      "const": "1.0"
+      "description": "Format version. 1.1 added the reuse fields.",
+      "const": "1.1"
     },
     "snapshot": {
       "type": "object",
@@ -64,7 +66,11 @@
         "dormant_btc",
         "dormant_key_in_output_btc",
         "coinbase_p2pk_coins",
-        "coinbase_p2pk_btc"
+        "coinbase_p2pk_btc",
+        "revealed_btc",
+        "exposed_btc",
+        "dormant_exposed_btc",
+        "exposed_share"
       ],
       "properties": {
         "coins": {
@@ -93,6 +99,38 @@
         },
         "coinbase_p2pk_btc": {
           "$ref": "#/$defs/btc"
+        },
+        "revealed_btc": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Key in output plus revealed: everything with a visible key."
+        },
+        "exposed_btc": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Key in output plus revealed: everything with a visible key."
+        },
+        "dormant_exposed_btc": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "description": "Key in output plus revealed: everything with a visible key."
+        },
+        "exposed_share": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "minimum": 0,
+          "maximum": 1
         }
       }
     },
@@ -130,7 +168,9 @@
           "share_of_supply",
           "key_in_output",
           "hash_only",
-          "dormant_btc"
+          "dormant_btc",
+          "revealed_coins",
+          "revealed_btc"
         ],
         "properties": {
           "script_type": {
@@ -167,6 +207,21 @@
           },
           "dormant_btc": {
             "$ref": "#/$defs/btc"
+          },
+          "revealed_coins": {
+            "type": [
+              "integer",
+              "null"
+            ],
+            "minimum": 0
+          },
+          "revealed_btc": {
+            "type": [
+              "number",
+              "null"
+            ],
+            "minimum": 0,
+            "description": "Key in output plus revealed: everything with a visible key."
           }
         }
       }
@@ -192,7 +247,8 @@
             "required": [
               "start_height",
               "start_date",
-              "btc_by_type"
+              "btc_by_type",
+              "revealed_btc_by_type"
             ],
             "properties": {
               "start_height": {
@@ -216,6 +272,20 @@
                     "nulldata",
                     "witness_unknown",
                     "nonstandard"
+                  ]
+                },
+                "additionalProperties": {
+                  "$ref": "#/$defs/btc"
+                }
+              },
+              "revealed_btc_by_type": {
+                "type": "object",
+                "propertyNames": {
+                  "enum": [
+                    "pubkeyhash",
+                    "scripthash",
+                    "witness_v0_keyhash",
+                    "witness_v0_scripthash"
                   ]
                 },
                 "additionalProperties": {
@@ -280,6 +350,46 @@
     "note": {
       "type": "string",
       "minLength": 1
+    },
+    "reuse": {
+      "description": "The reveal scan behind the revealed figures; null without one.",
+      "oneOf": [
+        {
+          "type": "null"
+        },
+        {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "scan_height",
+            "blocks",
+            "inputs",
+            "revealed_hashes",
+            "matched_addresses",
+            "method"
+          ],
+          "properties": {
+            "scan_height": {
+              "$ref": "#/$defs/count"
+            },
+            "blocks": {
+              "$ref": "#/$defs/count"
+            },
+            "inputs": {
+              "$ref": "#/$defs/count"
+            },
+            "revealed_hashes": {
+              "$ref": "#/$defs/count"
+            },
+            "matched_addresses": {
+              "$ref": "#/$defs/count"
+            },
+            "method": {
+              "type": "string"
+            }
+          }
+        }
+      ]
     }
   },
   "$defs": {

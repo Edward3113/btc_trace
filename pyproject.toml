@@ -9,6 +9,7 @@ requires-python = ">=3.12"
 authors = [{ name = "Edward Sampson-Blue" }]
 dependencies = [
     "jsonschema>=4.18",
+    "numpy>=2.0",
     "truststore>=0.10",
 ]
 

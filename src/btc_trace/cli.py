@@ -12,6 +12,8 @@ from concurrent.futures import ThreadPoolExecutor
 from datetime import date
 from pathlib import Path
 
+import numpy as np
+
 from btc_trace import __version__
 from btc_trace.exposure import exposure
 from btc_trace.heuristics import detect_change, input_addresses, looks_like_coinjoin
@@ -21,7 +23,14 @@ from btc_trace.report import render
 from btc_trace.rpc import NodeClient, RpcError
 from btc_trace.schema import report_kind, validate_report
 from btc_trace.trace import DEFAULT_WORKERS, to_date, trace
-from btc_trace.utxoset import BIN_SIZE, SnapshotError, build_report, read_snapshot
+from btc_trace.utxoset import (
+    BIN_SIZE,
+    SnapshotError,
+    build_report,
+    hash_targets,
+    read_header,
+    read_snapshot,
+)
 
 
 def _cmd_node(args: argparse.Namespace) -> int:
@@ -303,9 +312,135 @@ def _block_dates(client: NodeClient, heights: list[int], workers: int) -> dict[i
         return dict(zip(heights, pool.map(date_of, heights), strict=True))
 
 
+REVEAL_METHOD = (
+    "Every input in blocks 0 to the snapshot height was read; the public keys, redeem "
+    "scripts and witness scripts it revealed were hashed back to the addresses they "
+    "unlock (including the same key's other single-key address types), and matched to "
+    "hash-based coins by the first 8 bytes of the hash."
+)
+
+
+def _snapshot_info(snapshot: Path) -> tuple[dict | None, str]:
+    """The dump-utxos reply saved next to a snapshot, and the snapshot's base hash."""
+    info_path = snapshot.with_suffix(".json")
+    info = json.loads(info_path.read_text()) if info_path.exists() else None
+    with snapshot.open("rb") as f:
+        try:
+            header = read_header(f.read(51))
+        except SnapshotError as exc:
+            raise ValueError(f"{snapshot}: {exc}") from exc
+    return info, header.base_hash
+
+
+def _cmd_reveal_scan(args: argparse.Namespace) -> int:
+    from btc_trace.rawscan import KeepAliveClient, scan_chain
+    from btc_trace.reveal import ripemd160_available
+
+    if not ripemd160_available():
+        raise ValueError(
+            "this Python's OpenSSL has no RIPEMD-160, which address hashes need; "
+            "use the Python that uv installs (`uv python install 3.12`)"
+        )
+    info, base_hash = _snapshot_info(args.snapshot)
+    source = args.source() if getattr(args, "source", None) else None
+    client = None if source else KeepAliveClient.from_env()
+    if source is not None:
+        height = source.height_of(base_hash)
+    else:
+        height = client.call("getblockheader", [base_hash])["height"]
+        client.close()
+    if info and info.get("base_height") not in (None, height):
+        raise ValueError("the snapshot's saved details disagree with the node about its height")
+    stem = args.snapshot.with_suffix("")
+    targets_path = Path(f"{stem}.targets.npy")
+    out = args.out or Path(f"{stem}.revealed.npy")
+    display = ProgressDisplay()
+
+    if not targets_path.exists():
+        display.message(f"collecting the address hashes of hash-based coins in {args.snapshot}")
+
+        def reading(done: int, total: int) -> None:
+            display.bar("reading", done, total, f"{done:,} of {total:,} coins")
+
+        targets = hash_targets(args.snapshot, progress=reading)
+        display.finish()
+        tmp = Path(f"{stem}.targets.tmp.npy")
+        np.save(tmp, targets)
+        os.replace(tmp, targets_path)
+        display.message(f"  {targets.size:,} distinct addresses saved to {targets_path}")
+    else:
+        display.message(f"reusing the address hashes in {targets_path}")
+
+    display.message(
+        f"reading blocks 0 to {height:,} from the node ({args.workers} at a time). This "
+        "reads the whole chain and can take many hours; progress is saved, so an "
+        "interrupted scan picks up where it stopped."
+    )
+
+    def scanning(done: int, total: int, size: int, seconds: float) -> None:
+        rate = size / seconds / 1e6 if seconds > 0 else 0.0
+        gigabytes = size / 1e9
+        display.bar(
+            "blocks", done, total, f"{done:,} of {total:,}  {gigabytes:,.1f} GB  {rate:,.0f} MB/s"
+        )
+
+    try:
+        matched, totals = scan_chain(
+            height,
+            targets_path,
+            args.cache_dir / f"reveal-{height}",
+            chunk=args.chunk,
+            workers=args.workers,
+            source=source,
+            progress=scanning,
+        )
+    finally:
+        display.finish()
+    tmp = Path(f"{out.with_suffix('')}.tmp.npy")
+    np.save(tmp, matched)
+    os.replace(tmp, out)
+    summary = {
+        "scan_height": height,
+        "base_hash": base_hash,
+        "blocks": totals.blocks,
+        "inputs": totals.inputs,
+        "revealed_hashes": totals.reveals,
+        "matched_addresses": int(matched.size),
+        "bytes_read": totals.bytes,
+    }
+    out.with_suffix(".json").write_text(json.dumps(summary, indent=2) + "\n")
+    print(
+        f"read {totals.blocks:,} blocks ({totals.bytes / 1e9:,.1f} GB) and {totals.inputs:,} "
+        f"inputs: {matched.size:,} hash-based addresses in the snapshot have revealed "
+        f"their key or script.\nSaved to {out}. Next:\n"
+        f"  btc-trace utxo-stats {args.snapshot} --revealed {out} "
+        f"--out reports/{stem.name}.json"
+    )
+    return 0
+
+
+def _load_revealed(path: Path, base_hash: str) -> tuple[np.ndarray, dict]:
+    summary_path = path.with_suffix(".json")
+    if not summary_path.exists():
+        raise ValueError(f"{summary_path} is missing; reveal-scan writes it next to {path}")
+    summary = json.loads(summary_path.read_text())
+    if summary.get("base_hash") != base_hash:
+        raise ValueError(f"{path} was made for a different snapshot")
+    reuse = {
+        k: summary[k]
+        for k in ("scan_height", "blocks", "inputs", "revealed_hashes", "matched_addresses")
+    }
+    reuse["method"] = REVEAL_METHOD
+    return np.load(path), reuse
+
+
 def _cmd_utxo_stats(args: argparse.Namespace) -> int:
     info_path = args.dump_info or args.snapshot.with_suffix(".json")
     expected = json.loads(info_path.read_text()) if info_path.exists() else None
+    revealed = reuse = None
+    if args.revealed:
+        _, base_hash = _snapshot_info(args.snapshot)
+        revealed, reuse = _load_revealed(args.revealed, base_hash)
     display = ProgressDisplay()
     verb = "reading and verifying" if not args.no_verify else "reading"
     display.message(f"{verb} {args.snapshot}")
@@ -314,7 +449,9 @@ def _cmd_utxo_stats(args: argparse.Namespace) -> int:
         display.bar("reading", done, total, f"{done:,} of {total:,} coins")
 
     try:
-        stats = read_snapshot(args.snapshot, verify=not args.no_verify, progress=progress)
+        stats = read_snapshot(
+            args.snapshot, verify=not args.no_verify, progress=progress, revealed=revealed
+        )
     except SnapshotError as exc:
         raise ValueError(f"{args.snapshot}: {exc}") from exc
     finally:
@@ -334,7 +471,12 @@ def _cmd_utxo_stats(args: argparse.Namespace) -> int:
         display.message("no node configured (BTC_URL); age bins will have heights but no dates")
 
     report = build_report(
-        stats, base_height=base_height, base_date=base_date, expected=expected, bin_dates=bin_dates
+        stats,
+        base_height=base_height,
+        base_date=base_date,
+        expected=expected,
+        bin_dates=bin_dates,
+        reuse=reuse,
     )
     text = json.dumps(report, indent=2)
     if args.out:
@@ -354,25 +496,37 @@ def _checks_pass(checks: dict) -> bool:
 
 def _print_utxo_report(report: dict) -> None:
     snap, t = report["snapshot"], report["totals"]
+    reuse = report.get("reuse")
     print(
         f"UTXO set at block {snap['base_height']:,} ({snap['date'] or 'date unknown'}, "
         f"{snap['network']}): {t['coins']:,} coins holding {t['btc']:,.8f} BTC"
     )
     print(f"\n  {'type':<24}{'coins':>14}{'BTC':>22}{'share':>8}  key visible?")
     for label, v in report["by_type"].items():
-        visible = (
-            "yes, in output"
-            if v["key_in_output"]
-            else ("only if reused" if v["hash_only"] else "-")
-        )
+        if v["key_in_output"]:
+            visible = "yes, in output"
+        elif v.get("revealed_btc") is not None:
+            visible = f"revealed for {v['revealed_btc']:,.8f} BTC"
+        elif v["hash_only"]:
+            visible = "only if reused"
+        else:
+            visible = "-"
         print(
             f"  {label:<24}{v['coins']:>14,}{v['btc']:>22,.8f}{v['share_of_supply']:>8.2%}"
             f"  {visible}"
         )
     print(
         f"\n  key in output (P2PK, multisig, Taproot): {t['key_in_output_btc']:>18,.8f} BTC\n"
-        f"  behind a hash until spent:               {t['hash_only_btc']:>18,.8f} BTC\n"
-        f"  P2PK from coinbase (early mining):      {t['coinbase_p2pk_btc']:>18,.8f} BTC "
+        f"  behind a hash until spent:               {t['hash_only_btc']:>18,.8f} BTC"
+    )
+    if t.get("exposed_btc") is not None:
+        print(
+            f"    of which revealed by an earlier spend: {t['revealed_btc']:>18,.8f} BTC\n"
+            f"  key visible in total:                    {t['exposed_btc']:>18,.8f} BTC "
+            f"({t['exposed_share']:.2%} of all BTC)"
+        )
+    print(
+        f"  P2PK from coinbase (early mining):       {t['coinbase_p2pk_btc']:>18,.8f} BTC "
         f"in {t['coinbase_p2pk_coins']:,} coins"
     )
     d = report["dormancy"]
@@ -381,6 +535,16 @@ def _print_utxo_report(report: dict) -> None:
         f"{t['dormant_btc']:,.8f} BTC, of which {t['dormant_key_in_output_btc']:,.8f} BTC "
         "with the key in the output"
     )
+    if t.get("dormant_exposed_btc") is not None:
+        print(
+            f"  unmoved {d['years']}+ years with a visible key (either way): "
+            f"{t['dormant_exposed_btc']:,.8f} BTC"
+        )
+    if reuse:
+        print(
+            f"  reveal scan: {reuse['blocks']:,} blocks, {reuse['inputs']:,} inputs, "
+            f"{reuse['matched_addresses']:,} reused hash-based addresses in this snapshot"
+        )
     c = report["checks"]
     marks = {True: "ok", False: "MISMATCH", None: "not checked"}
     print(
@@ -791,6 +955,7 @@ def build_parser() -> argparse.ArgumentParser:
         help="the node's reply saved by dump-utxos (default: SNAPSHOT with .json)",
     )
     us.add_argument("--no-verify", action="store_true", help="skip recomputing the UTXO set hash")
+    us.add_argument("--revealed", type=Path, help="result of reveal-scan, to measure address reuse")
     us.add_argument(
         "--no-dates", action="store_true", help="do not look up block dates on the node"
     )
@@ -802,6 +967,26 @@ def build_parser() -> argparse.ArgumentParser:
     )
     us.add_argument("--out", type=Path, help="write the JSON report here instead of stdout")
     us.set_defaults(func=_cmd_utxo_stats)
+
+    rv = sub.add_parser(
+        "reveal-scan",
+        help="read every block to find addresses whose key or script has been revealed",
+    )
+    rv.add_argument("snapshot", type=Path, help="file written by dump-utxos (dumptxoutset)")
+    rv.add_argument(
+        "--workers", type=int, default=4, help="processes reading blocks at once (default: 4)"
+    )
+    rv.add_argument(
+        "--chunk", type=int, default=1000, help="blocks per saved range (default: 1000)"
+    )
+    rv.add_argument(
+        "--cache-dir",
+        type=Path,
+        default=Path(".btc_trace_cache"),
+        help="where finished ranges are saved (default: .btc_trace_cache)",
+    )
+    rv.add_argument("--out", type=Path, help="result file (default: SNAPSHOT.revealed.npy)")
+    rv.set_defaults(func=_cmd_reveal_scan)
 
     st = sub.add_parser("scan-status", help="show progress of a block or UTXO scan on the node")
     st.set_defaults(func=_cmd_scan_status)
