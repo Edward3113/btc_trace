@@ -19,6 +19,7 @@ from btc_trace.exposure import exposure
 from btc_trace.heuristics import detect_change, input_addresses, looks_like_coinjoin
 from btc_trace.ofac import extract_addresses
 from btc_trace.progress import ProgressDisplay
+from btc_trace.quantum_page import render_quantum
 from btc_trace.report import render
 from btc_trace.rpc import NodeClient, RpcError
 from btc_trace.schema import report_kind, validate_report
@@ -746,20 +747,25 @@ def _parse_mark(text: str) -> tuple[str, str]:
     return day, label or day
 
 
-def _load_valid_report(path: Path, validate: bool = True) -> dict:
-    """Read a trace report, refusing one that does not match the schema."""
+PAGE_KINDS = ("trace", "utxo-set")
+DEFAULT_PAGES = {"trace": Path("docs/index.html"), "utxo-set": Path("docs/quantum/index.html")}
+
+
+def _load_valid_report(path: Path, validate: bool = True, kinds=PAGE_KINDS) -> dict:
+    """Read a report, refusing one that does not match its schema."""
     report = json.loads(path.read_text())
-    if report_kind(report) != "trace":
+    kind = report_kind(report)
+    if kind not in kinds:
         raise ValueError(
-            f"{path} is an {report_kind(report)} report; `btc-trace report` renders trace "
-            "reports only (use `btc-trace show` for a summary)"
+            f"{path} is an {kind} report; `btc-trace report` renders trace and "
+            "utxo-set reports (use `btc-trace show` for a summary)"
         )
     if not validate:
         return report
     print(f"checking {path} against the report schema...", file=sys.stderr, flush=True)
     problems = validate_report(report)
     if problems:
-        raise ValueError(f"{path} is not a valid trace report:\n  " + "\n  ".join(problems))
+        raise ValueError(f"{path} is not a valid {kind} report:\n  " + "\n  ".join(problems))
     return report
 
 
@@ -778,11 +784,23 @@ def _cmd_validate(args: argparse.Namespace) -> int:
 
 def _cmd_report(args: argparse.Namespace) -> int:
     report = _load_valid_report(args.report, validate=not args.no_validate)
+    kind = report_kind(report)
     findings = args.findings.read_text() if args.findings else None
-    page = render(report, title=args.title, findings=findings, marks=args.mark)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text(page)
-    print(f"wrote {args.out} ({len(page) / 1024:,.0f} KB)", file=sys.stderr)
+    if kind == "utxo-set":
+        exposure_report = None
+        if args.exposure:
+            exposure_report = _load_valid_report(
+                args.exposure, validate=not args.no_validate, kinds=("exposure",)
+            )
+        page = render_quantum(report, exposure=exposure_report, findings=findings, title=args.title)
+    else:
+        if args.exposure:
+            raise ValueError("--exposure goes with a utxo-set report")
+        page = render(report, title=args.title, findings=findings, marks=args.mark)
+    out = args.out or DEFAULT_PAGES[kind]
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text(page)
+    print(f"wrote {out} ({len(page) / 1024:,.0f} KB)", file=sys.stderr)
     return 0
 
 
@@ -916,10 +934,20 @@ def build_parser() -> argparse.ArgumentParser:
     va.add_argument("--limit", type=int, default=20, help="problems to list (default: 20)")
     va.set_defaults(func=_cmd_validate)
 
-    rp = sub.add_parser("report", help="render a saved trace report as one HTML page")
-    rp.add_argument("report", type=Path, help="JSON report written by trace --out")
-    rp.add_argument("--out", type=Path, default=Path("docs/index.html"), help="HTML file to write")
-    rp.add_argument("--title", help="page title (default: from the SDN entry)")
+    rp = sub.add_parser("report", help="render a saved trace or utxo-set report as one HTML page")
+    rp.add_argument("report", type=Path, help="JSON report written by trace or utxo-stats")
+    rp.add_argument(
+        "--out",
+        type=Path,
+        help="HTML file to write (default: docs/index.html for a trace, "
+        "docs/quantum/index.html for a utxo-set report)",
+    )
+    rp.add_argument("--title", help="page title")
+    rp.add_argument(
+        "--exposure",
+        type=Path,
+        help="with a utxo-set report: an exposure report to add as a sanctions section",
+    )
     rp.add_argument(
         "--no-validate",
         action="store_true",

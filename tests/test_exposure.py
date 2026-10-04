@@ -177,7 +177,7 @@ def test_exposure_command(tmp_path, monkeypatch, capsys):
     assert main(["show", str(out)]) == 0
     assert "By SDN entry" in capsys.readouterr().out
     assert main(["report", str(out), "--out", str(tmp_path / "page.html")]) == 1
-    assert "renders trace reports only" in capsys.readouterr().err
+    assert "renders trace and utxo-set reports" in capsys.readouterr().err
 
 
 def test_names_print_after_the_numbers(capsys):

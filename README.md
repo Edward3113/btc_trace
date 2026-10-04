@@ -18,10 +18,15 @@ was taken down and sanctioned.
 **[View the Hydra Market report](https://edward3113.github.io/btc_trace/)** and the
 [written findings](findings/hydra.md) behind it.
 
-> **Status:** tracing, clustering, outflow estimates, schema-validated reports, and the
-> published report page are done. Quantum-exposure analysis is under way: exposure of
-> listed addresses and of the whole UTXO set by type works; address reuse across the
-> whole chain is next (see [Roadmap](#roadmap)).
+Phase 2 measures how much bitcoin is exposed to a future quantum computer. At block
+969,756, **7,118,300 BTC (35.4% of all bitcoin)** sat behind a public key already visible
+on-chain, three quarters of it because of address reuse. **[View the quantum exposure
+report](https://edward3113.github.io/btc_trace/quantum/)** and its
+[findings](findings/quantum.md).
+
+> **Status:** both phases are done: sanctions tracing with its Hydra Market report, and
+> quantum-exposure analysis of the sanctioned addresses and of the whole UTXO set,
+> including address reuse across the whole chain, with its own report page.
 
 ## Why this project exists
 
@@ -151,7 +156,7 @@ BTC_FIXTURES=recordings uv run btc-trace tx <txid>
 | `btc-trace reveal-scan SNAPSHOT [--workers N]` | Read every block to find hash-based addresses whose key or script has been revealed |
 | `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons, or an exposure summary |
 | `btc-trace validate REPORT` | Check a saved report against its JSON Schema |
-| `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--out FILE]` | Render a trace as one self-contained HTML page |
+| `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--exposure FILE] [--out FILE]` | Render a trace or UTXO set report as one self-contained HTML page |
 | `btc-trace scan-status` / `btc-trace scan-abort` | Check or stop a block or UTXO scan on the node (each runs one at a time) |
 
 ## How tracing works
@@ -389,6 +394,23 @@ run on Node 24.
 The page contains only public chain and sanctions data; no node address or credential
 is ever written into a report.
 
+### The quantum exposure page
+
+The same command renders a UTXO set report, written by `utxo-stats --revealed`, as a
+second page at `docs/quantum/index.html`. It has the headline exposure figures, the
+split by output type, a chart of when exposed coins last moved, a comparison with
+published estimates, and the BIP-360 and BIP-361 context. `--exposure` adds the
+sanctioned-address results from `btc-trace exposure`:
+
+```bash
+uv run btc-trace report reports/utxo-969756.json \
+  --exposure reports/exposure_ofac.json --findings findings/quantum.md
+```
+
+The page shows totals by type and by year only, and never lists exposed addresses: a
+ranked list of other people's exposed balances would be a target list. The one exception
+is the sanctions section, which names OFAC entries (public designations), not addresses.
+
 ## Roadmap
 
 1. ~~Multi-hop tracing with depth and value limits.~~ Done.
@@ -400,9 +422,10 @@ is ever written into a report.
       (`btc-trace exposure`).
    2. ~~The whole UTXO set by script type and age, from a `dumptxoutset` snapshot.~~
       Done (`btc-trace dump-utxos`, `btc-trace utxo-stats`).
-   3. Address reuse across the whole chain: keys revealed by any earlier spend
-      (`btc-trace reveal-scan`; built, first full run pending).
-   4. Dormancy, and a report page framed against BIP-360 and BIP-361.
+   3. ~~Address reuse across the whole chain: keys revealed by any earlier spend.~~
+      Done (`btc-trace reveal-scan`, `btc-trace utxo-stats --revealed`).
+   4. ~~Dormancy, and a report page framed against BIP-360 and BIP-361.~~ Done
+      (`btc-trace report` on a UTXO set report).
 
 ## Development
 
