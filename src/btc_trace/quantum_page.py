@@ -23,6 +23,7 @@ from btc_trace.report import (
     compact,
     esc,
     markdown,
+    nav,
     nice_ticks,
 )
 
@@ -57,6 +58,8 @@ PUBLISHED = [
     ),
 ]
 
+DEFAULT_LINKS = [("← Hydra Market trace", "../")]
+
 PAGE_CSS = """
 :root { --key: #2a78d6; --reused: #eb6834; --hidden: #d6d5ce; }
 @media (prefers-color-scheme: dark) {
@@ -78,7 +81,6 @@ PAGE_CSS = """
 .legend .key { background: var(--key); }
 .legend .reused { background: var(--reused); }
 .legend .hidden { background: var(--hidden); }
-nav.top { font-size: 14px; margin-bottom: 18px; }
 .tile.hero .value { font-size: clamp(30px, 8.5vw, 48px); }
 """
 
@@ -306,15 +308,14 @@ def render_quantum(
     exposure: dict[str, Any] | None = None,
     findings: str | None = None,
     title: str | None = None,
-    back_link: str | None = "../",
+    links: list[tuple[str, str]] | None = None,
 ) -> str:
     snap, t = report["snapshot"], report["totals"]
     measured = t.get("exposed_btc") is not None
     title = title or "How much bitcoin is exposed to a quantum computer?"
     key, revealed, hidden, other = _split(report)
     out: list[str] = []
-    if back_link:
-        out.append(f'<nav class="top"><a href="{esc(back_link)}">← Hydra Market trace</a></nav>')
+    out.append(nav(DEFAULT_LINKS if links is None else links))
     out.append(f"<h1>{esc(title)}</h1>")
     when = f" ({esc(snap['date'])})" if snap.get("date") else ""
     out.append(

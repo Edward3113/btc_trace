@@ -747,6 +747,17 @@ def _parse_mark(text: str) -> tuple[str, str]:
     return day, label or day
 
 
+def _parse_link(text: str) -> tuple[str, str]:
+    from btc_trace.report import safe_url
+
+    label, sep, url = text.partition("=")
+    if not sep or not label or not url or not safe_url(url):
+        raise argparse.ArgumentTypeError(
+            f"expected LABEL=URL with a relative or http(s) URL, got {text!r}"
+        )
+    return label, url
+
+
 PAGE_KINDS = ("trace", "utxo-set")
 DEFAULT_PAGES = {"trace": Path("docs/index.html"), "utxo-set": Path("docs/quantum/index.html")}
 
@@ -792,11 +803,17 @@ def _cmd_report(args: argparse.Namespace) -> int:
             exposure_report = _load_valid_report(
                 args.exposure, validate=not args.no_validate, kinds=("exposure",)
             )
-        page = render_quantum(report, exposure=exposure_report, findings=findings, title=args.title)
+        page = render_quantum(
+            report,
+            exposure=exposure_report,
+            findings=findings,
+            title=args.title,
+            links=args.link or None,
+        )
     else:
         if args.exposure:
             raise ValueError("--exposure goes with a utxo-set report")
-        page = render(report, title=args.title, findings=findings, marks=args.mark)
+        page = render(report, title=args.title, findings=findings, marks=args.mark, links=args.link)
     out = args.out or DEFAULT_PAGES[kind]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(page)
@@ -961,6 +978,14 @@ def build_parser() -> argparse.ArgumentParser:
         default=[],
         metavar="YYYY-MM-DD=LABEL",
         help="a dated reference line on the timeline (repeatable)",
+    )
+    rp.add_argument(
+        "--link",
+        action="append",
+        type=_parse_link,
+        default=[],
+        metavar="LABEL=URL",
+        help="a link to a related page, shown above the title (repeatable)",
     )
     rp.set_defaults(func=_cmd_report)
 

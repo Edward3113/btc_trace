@@ -84,3 +84,19 @@ def test_bad_mark_is_rejected(report, tmp_path):
     src.write_text(json.dumps(report))
     with pytest.raises(SystemExit):
         main(["report", str(src), "--out", str(tmp_path / "x.html"), "--mark", "soon=Later"])
+
+
+def test_related_page_links(report, tmp_path, capsys):
+    page = render(report, links=[("Quantum exposure →", "quantum/")])
+    assert '<nav class="top"><a href="quantum/">Quantum exposure →</a></nav>' in page
+    assert "<nav" not in render(report)  # no links, no empty nav bar
+    # Unsafe schemes are dropped from the page and refused on the command line.
+    assert "javascript" not in render(report, links=[("x", "javascript:alert(1)")])
+    src = tmp_path / "r.json"
+    src.write_text(json.dumps(report))
+    out = tmp_path / "page.html"
+    with pytest.raises(SystemExit):
+        main(["report", str(src), "--out", str(out), "--link", "x=javascript:alert(1)"])
+    assert "relative or http(s) URL" in capsys.readouterr().err
+    assert main(["report", str(src), "--out", str(out), "--link", "Next=quantum/"]) == 0
+    assert 'href="quantum/"' in out.read_text()

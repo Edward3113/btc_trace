@@ -80,3 +80,8 @@ def test_report_command_writes_the_quantum_page(report, tmp_path, monkeypatch, c
     trace.write_text(json.dumps({"report_version": "1.0"}))
     assert main(["report", str(trace), "--no-validate", "--exposure", str(exp)]) == 1
     assert "--exposure goes with a utxo-set report" in capsys.readouterr().err
+
+
+def test_quantum_page_links_back_by_default(report):
+    assert '<a href="../">← Hydra Market trace</a>' in render_quantum(report)
+    assert "<nav" not in render_quantum(report, links=[])

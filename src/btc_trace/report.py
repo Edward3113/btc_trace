@@ -344,6 +344,8 @@ td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; }
 details { margin: 8px 0 16px; }
 summary { cursor: pointer; color: var(--ink-2); }
 footer { margin-top: 48px; color: var(--ink-2); font-size: 14px; }
+nav.top { display: flex; flex-wrap: wrap; gap: 6px 18px; font-size: 14px;
+  margin-bottom: 18px; }
 """
 
 SCRIPT = """
@@ -380,6 +382,20 @@ document.querySelectorAll('figure').forEach(function (fig) {
 """
 
 
+def nav(links: list[tuple[str, str]] | None) -> str:
+    """Links to related pages, shown above the title. Only relative and http(s) URLs."""
+    items = [
+        f'<a href="{esc(url)}">{esc(label)}</a>' for label, url in links or [] if safe_url(url)
+    ]
+    return f'<nav class="top">{"".join(items)}</nav>' if items else ""
+
+
+def safe_url(url: str) -> bool:
+    """Relative paths and http(s) links; never javascript: or other schemes."""
+    scheme = re.match(r"^([A-Za-z][A-Za-z0-9+.-]*):", url)
+    return scheme is None or scheme.group(1).lower() in ("http", "https")
+
+
 def _table(headers: list[tuple[str, bool]], rows: list[list[str]]) -> str:
     head = "".join(
         f'<th class="num">{esc(h)}</th>' if n else f"<th>{esc(h)}</th>" for h, n in headers
@@ -406,6 +422,7 @@ def render(
     findings: str | None = None,
     marks: list[tuple[str, str]] | None = None,
     timeline_rows: int = 20,
+    links: list[tuple[str, str]] | None = None,
 ) -> str:
     marks = marks or []
     entities = report.get("entities", [])
@@ -420,7 +437,7 @@ def render(
     clusters = report.get("clusters", [])
     seed_clusters = [c for c in clusters if c.get("seeds")]
 
-    out: list[str] = []
+    out: list[str] = [nav(links)]
     out.append(f"<h1>{esc(title)}</h1>")
     refs = sorted({e["sdn_ref"] for e in entities if e.get("sdn_ref")})
     who = ", ".join(f"OFAC SDN entry {esc(r)}" for r in refs) or "the seed addresses"

@@ -156,7 +156,7 @@ BTC_FIXTURES=recordings uv run btc-trace tx <txid>
 | `btc-trace reveal-scan SNAPSHOT [--workers N]` | Read every block to find hash-based addresses whose key or script has been revealed |
 | `btc-trace show REPORT` | Print a saved trace report as readable hops with reasons, or an exposure summary |
 | `btc-trace validate REPORT` | Check a saved report against its JSON Schema |
-| `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--exposure FILE] [--out FILE]` | Render a trace or UTXO set report as one self-contained HTML page |
+| `btc-trace report REPORT [--findings FILE] [--mark DATE=LABEL] [--exposure FILE] [--link LABEL=URL] [--out FILE]` | Render a trace or UTXO set report as one self-contained HTML page |
 | `btc-trace scan-status` / `btc-trace scan-abort` | Check or stop a block or UTXO scan on the node (each runs one at a time) |
 
 ## How tracing works
@@ -407,6 +407,16 @@ uv run btc-trace report reports/utxo-969756.json \
   --exposure reports/exposure_ofac.json --findings findings/quantum.md
 ```
 
+`--link LABEL=URL` (repeatable) puts links to related pages above a page's title. The
+quantum page links back to the Hydra report by default; the Hydra page links forward
+with:
+
+```bash
+uv run btc-trace report reports/hydra_d1.json --findings findings/hydra.md \
+  --mark "2022-04-05=Takedown and OFAC designation" \
+  --link "Quantum exposure report →=quantum/"
+```
+
 The page shows totals by type and by year only, and never lists exposed addresses: a
 ranked list of other people's exposed balances would be a target list. The one exception
 is the sanctions section, which names OFAC entries (public designations), not addresses.
@@ -426,6 +436,21 @@ is the sanctions section, which names OFAC entries (public designations), not ad
       Done (`btc-trace reveal-scan`, `btc-trace utxo-stats --revealed`).
    4. ~~Dormancy, and a report page framed against BIP-360 and BIP-361.~~ Done
       (`btc-trace report` on a UTXO set report).
+
+## Freeing disk space
+
+The UTXO snapshot (about 10 GB), the address lists built from it, and the progress
+files that let scans resume are only needed while you work. `scripts/cleanup_data.sh`
+lists them with their sizes and deletes them only when asked:
+
+```bash
+scripts/cleanup_data.sh            # dry run: what would be freed
+scripts/cleanup_data.sh --yes      # delete it
+scripts/cleanup_data.sh --all      # also include the reveal-scan results
+```
+
+It never touches `reports/`, `docs/`, `findings/`, the OFAC address file, or the small
+`data/utxo-*.json` dump details, and it refuses to run outside this project.
 
 ## Development
 
